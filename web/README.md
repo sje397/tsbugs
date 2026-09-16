@@ -47,16 +47,26 @@ so a divergence anywhere in the tick — VM, RNG stream, list ordering, reproduc
 order — lands in the hash. It is also what makes "the port is faithful" a
 falsifiable statement rather than a description of intent.
 
-## Measured (M4 Max, one run each — see the caveats)
+## Measured (M4 Max, three runs each — spread is the point)
 
 | | Browser (Chromium) | Node |
 |---|---|---|
-| Tick, pop ~100 | 5,709 /s — 0.175 ms | 7,372 /s — 0.136 ms |
-| Full-grid pass (57,600 cells) | 1.25 ms | 1.31 ms |
+| Tick, pop 90-123 | 5,709-6,420 /s — 0.156-0.175 ms | 6,037-6,261 /s — 0.160-0.166 ms |
+| Full-grid pass (57,600 cells) | 1.393 ms | 1.444-1.520 ms |
 
-A 16.7 ms frame therefore fits ~95 ticks at 4 ticks/frame costing ~0.7 ms of
-tick plus 0.29 ms of blit. The renderer is not the bottleneck and neither is the
-browser; the VM is.
+The browser and Node ranges overlap: this code costs the same in both, and the
+14% spread within each row is run-to-run variance on one machine, not a browser
+penalty. An earlier version of this table quoted one run each (5,709 against
+7,372) and read as a 23% browser tax; the Node figure has not reappeared in
+three runs since.
+
+At the page's default 4 ticks/frame the simulation costs ~0.67 ms of a 16.7 ms
+frame, and the frame's remaining budget would fit ~100 ticks. The blit is
+*below reliable measurement* here — 0.042 ms and 0.203 ms on two runs, so
+compositor scheduling dominates any real cost. No figure for it is quoted here
+for that reason. Rendering is not the constraint at 240x240; `PERFORMANCE.md`
+breaks the tick itself down (roughly 56% VM, 44% world) and asks what a GPU
+would and would not buy.
 
 **Caveats, because these are single runs.** One machine, one population point,
 one seed. Population is *chaotic* with respect to seed: three seeds at 20k ticks
