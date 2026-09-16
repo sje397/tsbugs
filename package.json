@@ -1,0 +1,17 @@
+{
+  "name": "tsbugs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A TypeScript port of QtBugs (2011-2013) — an evolutionary virtual-machine simulation. Faithful to the authors' intent rather than to their defects: every known upstream bug is either fixed or available behind an explicit flag, and each divergence is documented in DIVERGENCES.md.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test 'dist/test/**/*.test.js'"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.9.3"
+  }
+}
