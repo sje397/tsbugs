@@ -22,5 +22,5 @@
 
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "tools/**/*.mts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "tools/**/*.ts"]
 }

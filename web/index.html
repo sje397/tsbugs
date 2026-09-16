@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tsbugs</title>
+<style>
+  :root {
+    --bg: #101214; --panel: #181c1f; --line: #2b3238; --text: #d6dde3;
+    --dim: #7d8b95; --hot: #7ec46b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: flex; gap: 18px; padding: 18px; align-items: flex-start;
+  }
+  canvas {
+    background: #000; display: block;
+    /* petriwidget.cpp draws the image nearest-neighbour (Qt::FastTransformation);
+       the CSS below only affects the backing store, not the sampling. */
+    image-rendering: pixelated;
+  }
+  #panel { width: 300px; flex: none; }
+  fieldset {
+    border: 1px solid var(--line); background: var(--panel);
+    margin: 0 0 12px; padding: 10px 12px 12px;
+  }
+  legend { color: var(--dim); padding: 0 6px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 5px 0; }
+  .row > span:first-child { color: var(--dim); }
+  .row > span:last-child { font-variant-numeric: tabular-nums; }
+  button {
+    font: inherit; color: var(--text); background: #232a2f;
+    border: 1px solid var(--line); border-radius: 3px; padding: 4px 10px; cursor: pointer;
+  }
+  button:hover { border-color: #3d474f; }
+  button.primary { background: #2b4a2b; border-color: #3d6b3d; }
+  input[type=range] { width: 150px; }
+  input[type=number], select {
+    font: inherit; color: var(--text); background: #232a2f;
+    border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px; width: 90px;
+  }
+  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
+  .modes label { color: var(--text); cursor: pointer; }
+  .modes input { vertical-align: -1px; }
+  .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+  .stats span:nth-child(odd) { color: var(--dim); }
+  .stats span:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
+  .gen { color: var(--hot); }
+  footer { color: var(--dim); font-size: 11px; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<canvas id="view"></canvas>
+
+<div id="panel">
+  <fieldset>
+    <legend>run</legend>
+    <div class="row">
+      <span>
+        <button id="run" class="primary">Stop</button>
+        <button id="step">Step</button>
+      </span>
+      <span id="ups" class="gen">0.00/s</span>
+    </div>
+    <div class="row">
+      <span>ticks/frame</span>
+      <span><input id="speed" type="range" min="1" max="64" value="4"> <span id="speedVal">4</span></span>
+    </div>
+    <div class="row">
+      <span>frame budget</span>
+      <span><input id="budget" type="checkbox"> fill the frame</span>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>view mode</legend>
+    <div class="modes" id="modes"></div>
+    <div class="row">
+      <span>dna byte</span>
+      <span><input id="showByte" type="number" min="0" value="0"></span>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>world</legend>
+    <div class="row"><span>size</span>
+      <span><select id="size"><option value="240" selected>240 x 240</option><option value="480">480 x 480</option></select></span></div>
+    <div class="row"><span>seed</span>
+      <span><input id="seed" type="number" value="2024"></span></div>
+    <div class="row"><span>ground roughness</span>
+      <span><input id="roughness" type="range" min="0" max="40" value="20"> <span id="roughVal">20</span></span></div>
+    <div class="row"><span>sense model</span>
+      <span><select id="senses">
+        <option value="SIGHTED" selected>sighted</option>
+        <option value="AS_SHIPPED">as-shipped</option>
+      </select></span></div>
+    <div class="row"><span></span><span><button id="new">New world</button></span></div>
+  </fieldset>
+
+  <fieldset class="stats">
+    <legend>stats</legend>
+    <span>time</span><span id="sTime">0</span>
+    <span>population</span><span id="sPop">0</span>
+    <span>generation</span><span id="sGen">0</span>
+    <span>world energy</span><span id="sTotal">0</span>
+    <span>bug energy</span><span id="sBug">0</span>
+    <span>cell energy</span><span id="sCell">0</span>
+    <span>undistributed</span><span id="sRest">0</span>
+    <span>births / deaths</span><span id="sBD">0 / 0</span>
+  </fieldset>
+
+  <footer>
+    Port of QtBugs @ fb3e2d4. Palette, view modes and hash layout are the
+    original's; see DIVERGENCES.md for every place this differs.
+  </footer>
+</div>
+
+<script type="module" src="./app.mjs"></script>
+</body>
+</html>
