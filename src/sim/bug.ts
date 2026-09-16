@@ -30,10 +30,6 @@ export class Bug {
   /** VM output 1, written raw on update — note the constructor clamps it, update does not. */
   color: number;
   split: number;
-  action: number;
-
-  /** Terrain currently being carried. */
-  payload = 0;
   age = 0;
   children = 0;
   generation = 0;
@@ -48,7 +44,6 @@ export class Bug {
     this.dir = (processor.readOut(0) + DIR_STAY) % 9;
     this.color = (processor.readOut(1) % 254) + 1;
     this.split = processor.readOut(2);
-    this.action = processor.readOut(3);
   }
 
   /** bug.cpp:30 — a founder: `max_data`-bounded random genome, random bytes. */
@@ -100,7 +95,6 @@ export class Bug {
     this.dir = (this.processor.readOut(0) + DIR_STAY) % 9;
     this.color = this.processor.readOut(1);
     this.split = this.processor.readOut(2);
-    this.action = this.processor.readOut(3);
     this.age++;
   }
 

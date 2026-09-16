@@ -24,13 +24,13 @@
  * Modes exist so a CPU profile can attribute time to one loop at a time: with
  * only `tick` selected, every sample belongs to the simulation.
  *
- * Run:          node dist/tools/bench.mjs [steps] [seed] [roughness] [mode] [size]
- *               mode: all (default) | tick | redraw | flat
+ * Run:          node dist/tools/bench.mjs [steps] [seed] [mode] [size]
+ *               mode: all (default) | tick | redraw
  *               size: world edge in cells (default 240). Quadrupling it
  *                     quadruples the grid and, if a tick's cost tracks the
  *                     population rather than the world, should not change the
  *                     per-tick figure at all.
- * Attribution:  node --cpu-prof --cpu-prof-dir=/tmp/prof dist/tools/bench.mjs 20000 2024 20 tick
+ * Attribution:  node --cpu-prof --cpu-prof-dir=/tmp/prof dist/tools/bench.mjs 20000 2024 tick
  */
 
 import { PetriDish } from '../src/sim/dish.js';
@@ -39,16 +39,14 @@ import { Rng } from '../src/sim/rng.js';
 
 const steps = Number(process.argv[2] ?? 5000);
 const seed = Number(process.argv[3] ?? 2024);
-const roughness = Number(process.argv[4] ?? 20);
-const mode = process.argv[5] ?? 'all';
-const size = Number(process.argv[6] ?? DEFAULT_PARAMS.width);
+const mode = process.argv[4] ?? 'all';
+const size = Number(process.argv[5] ?? DEFAULT_PARAMS.width);
 
 const warmup = 2000;
 const cells = size * size;
 
-function build(roughness: number) {
+function build() {
   const dish = new PetriDish({ ...DEFAULT_PARAMS, width: size, height: size }, new Rng(seed));
-  if (roughness > 0) dish.seedTerrain(roughness, new Rng(seed + 1));
   // The first thousand ticks run at a different population and before the JIT
   // has settled on the hot paths; neither belongs in a throughput figure.
   for (let t = 0; t < warmup; t++) dish.step();
@@ -80,22 +78,17 @@ const rate = (r: { secs: number; reps: number }) => (r.reps / r.secs).toFixed(0)
 const popLine = (pops: number[]) =>
   `pop ${Math.min(...pops)}..${Math.max(...pops)} (mean ${(pops.reduce((a, b) => a + b) / pops.length).toFixed(0)})`;
 
-console.log(`seed ${seed}, roughness ${roughness}, ${size}x${size} world, ${warmup} warm-up ticks`);
+console.log(`seed ${seed}, ${size}x${size} world, ${warmup} warm-up ticks`);
 
 if (mode === 'all' || mode === 'tick') {
-  const r = tick(build(roughness), steps);
+  const r = tick(build(), steps);
   console.log(`  tick    ${rate(r)} /s   ${us(r)} us   ${popLine(r.pops)}`);
 }
 
 if (mode === 'all' || mode === 'redraw') {
   const reps = Math.max(1, Math.floor(steps / 10));
-  const r = redraw(build(roughness), reps);
+  const r = redraw(build(), reps);
   console.log(`  redraw  ${rate(r)} /s   ${us(r)} us   ${cells} cells, one pass each`);
-}
-
-if (mode === 'all' || mode === 'flat') {
-  const r = tick(build(0), steps);
-  console.log(`  flat    ${rate(r)} /s   ${us(r)} us   ${popLine(r.pops)}  [different world, not a control]`);
 }
 
 console.log(`  genesis ${Number(DEFAULT_PARAMS.stepsPerUpdate)} VM steps per bug per tick`);

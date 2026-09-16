@@ -10,9 +10,8 @@
  * the two, so this prints births against injections side by side, which is the
  * only way to see which of them is actually setting the population's turnover.
  *
- * Run:  node dist/tools/population-probe.mjs [steps] [seed] [roughness]
- *   roughness 0 (default) starts flat, as upstream does; anything else seeds
- *   rolling ground through PetriDish.seedTerrain before the run, the way the
+ * Run:  node dist/tools/population-probe.mjs [steps] [seed]
+ *   The world is flat: there is no terrain to seed and no roughness to pass.
  *   fingerprint world does.
  */
 
@@ -22,10 +21,8 @@ import { Rng } from '../src/sim/rng.js';
 
 const steps = Number(process.argv[2] ?? 2000);
 const seed = Number(process.argv[3] ?? 1234);
-const roughness = Number(process.argv[4] ?? 0);
 
 const dish = new PetriDish({ ...DEFAULT_PARAMS }, new Rng(seed));
-if (roughness > 0) dish.seedTerrain(roughness, new Rng(seed + 1));
 
 const pad = (v: number, w: number) => String(v).padStart(w);
 const pad2 = (v: number, w: number) => v.toFixed(2).padStart(w);

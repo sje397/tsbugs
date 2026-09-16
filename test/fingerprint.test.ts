@@ -6,9 +6,8 @@ import { DEFAULT_PARAMS, SenseModel } from '../src/sim/params.js';
 import { Rng } from '../src/sim/rng.js';
 import { fingerprint } from '../src/sim/fingerprint.js';
 
-function run(seed = 2024, steps = 200, roughness = 20): PetriDish {
+function run(seed = 2024, steps = 200): PetriDish {
   const dish = new PetriDish({ ...DEFAULT_PARAMS, senseModel: SenseModel.SIGHTED }, new Rng(seed));
-  if (roughness > 0) dish.seedTerrain(roughness, new Rng(seed + 1));
   for (let i = 0; i < steps; i++) dish.step();
   return dish;
 }
@@ -33,23 +32,22 @@ test('a fixed run reproduces exactly', () => {
 test('the fingerprint of a fixed run is pinned', () => {
   // The port's own output, NOT upstream's. This catches unintended drift; it
   // cannot distinguish a faithful simulation from a consistently wrong one.
-  assert.equal(fingerprint(run(2024, 200)), 0xb49ccd2d);
+  assert.equal(fingerprint(run(2024, 200)), 0x8d2a2ade);
 });
 
 test('the fingerprint moves when anything that shapes the run moves', () => {
   // Each case is checked to differ from the base before it is asserted on, so
   // none of these can pass by comparing a value against itself.
   const base = fingerprint(run(2024, 200));
-  assert.equal(base, 0xb49ccd2d, 'precondition: the base run is the pinned one');
+  assert.equal(base, 0x8d2a2ade, 'precondition: the base run is the pinned one');
   assert.notEqual(fingerprint(run(2024, 201)), base, 'one more tick');
   assert.notEqual(fingerprint(run(2025, 200)), base, 'a different seed');
-  assert.notEqual(fingerprint(run(2024, 200, 0)), base, 'flat ground');
 });
 
 test('the fingerprint depends on the view mode, and so is only comparable within one', () => {
   const dish = run(2024, 50);
   const before = fingerprint(dish);
-  dish.setViewMode(ViewMode.TERRAIN);
+  dish.setViewMode(ViewMode.AGE);
   assert.notEqual(fingerprint(dish), before);
   dish.setViewMode(ViewMode.DEFAULT);
   assert.equal(fingerprint(dish), before, 'and returns to it');

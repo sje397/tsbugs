@@ -76,14 +76,9 @@ let lastMs = performance.now();
 function buildWorld() {
   const size = Number($('size').value);
   const seed = Number($('seed').value);
-  const roughness = Number($('roughness').value);
   const senseModel = $('senses').value === 'AS_SHIPPED' ? SenseModel.AS_SHIPPED : SenseModel.SIGHTED;
 
   dish = new PetriDish({ ...DEFAULT_PARAMS, width: size, height: size, senseModel }, new Rng(seed));
-  // Roughness 0 is upstream's start: every cell flat at TERRAIN_FLAT. Anything
-  // else seeds rolling ground from its own stream so the simulation's draws are
-  // unaffected by it.
-  if (roughness > 0) dish.seedTerrain(roughness, new Rng(seed + 1));
 
   off = document.createElement('canvas');
   off.width = size;
@@ -125,7 +120,6 @@ const MODES = [
   ['Age', ViewMode.AGE],
   ['DNA size', ViewMode.DNA_SIZE],
   ['DNA value', ViewMode.DNA_VALUE],
-  ['Terrain', ViewMode.TERRAIN],
 ];
 
 $('modes').innerHTML = MODES.map(([label, value], i) =>
@@ -137,7 +131,6 @@ for (const el of document.querySelectorAll('input[name=mode]')) {
 }
 $('showByte').addEventListener('change', () => { applyViewMode(); draw(); });
 $('speed').addEventListener('input', () => { $('speedVal').textContent = $('speed').value; });
-$('roughness').addEventListener('input', () => { $('roughVal').textContent = $('roughness').value; });
 $('new').addEventListener('click', buildWorld);
 $('step').addEventListener('click', () => { running = false; $('run').textContent = 'Run'; dish.step(); draw(); stats(performance.now(), true); });
 $('run').addEventListener('click', () => {

@@ -113,42 +113,17 @@ export const DEFAULT_PARAMS: WorldParams = {
 };
 
 /**
- * Elevation is a signed byte, so the bounds are the type's.
+ * The reading the VM's terrain sense channel (input slots 9-17) now carries,
+ * everywhere, forever.
  *
- * Upstream's terrain was an unbounded int with flat ground at 1 and a nominal
- * ceiling of MAX_TERRAIN = 10 (petri_dish.cpp:13) used both as the deposit guard
- * and as the divisor of the terrain view. The ceiling was already being broken
- * from removeBug(), which deposits a dying bug's payload with no check, and the
- * floor at 0 meant digging could only ever flatten the world — a hole was the
- * absence of ground, not a feature of it. The negative half of the type was
- * therefore never reachable, so `abs(terrain) < MAX_TERRAIN` was really a
- * ceiling test wearing a magnitude test's clothes.
- *
- * TERRAIN_FLAT stays at 1: the initial world is unchanged, and only the range
- * below it is new. See DIVERGENCES.md §8, "terrain stores and renders a signed
- * elevation".
+ * The world has no terrain: it is flat, and nothing can change it. Flat ground
+ * encoded as the two's-complement byte upstream's `signed char` channel used, so
+ * the channel reads 1 at every cell. The channel itself is kept because the
+ * 27-slot input layout is the genome's contract — a program's every branch is
+ * written against it — and deleting nine slots would change what every genome
+ * means rather than what the world contains.
  */
-export const TERRAIN_MIN = -127;
-export const TERRAIN_MAX = 127;
-export const TERRAIN_FLAT = 1;
-
-/**
- * How much elevation one traverse of the render ramp covers — and the number
- * upstream's terrain view divided by (MAX_TERRAIN = 10, petri_dish.cpp:13).
- *
- * Upstream used that one number for two jobs, and only one of them survives
- * contact with a signed type: as a *deposit guard* it was never true (see above),
- * but as the *scale of the terrain view* it is exactly right, because it names
- * how much relief the authors expected a world to have and therefore how much
- * relief the ramp should resolve.
- *
- * The port initially dropped it and mapped the type's full ±127 instead, which
- * gives one palette index per unit of elevation. That is ~13x less contrast than
- * upstream's own view, and it is why seeded ground rendered as a near-uniform
- * yellow field: a roughness-20 world's relief of -11..+14 lands inside palette
- * indices 116..141 of 252. See DIVERGENCES.md §8.
- */
-export const TERRAIN_RAMP_SCALE = 10;
+export const TERRAIN_SENSE = 1;
 
 /** petri_dish.cpp:158-161 — the reserved view-colour values. */
 export const ENERGY_COLOR = 255;

@@ -121,6 +121,12 @@ for the GPU work, not a preference.
 
 ## 8. Fixed: terrain renders monotonically — and diverged: it stores a signed byte
 
+**Superseded — historical.** The terrain feature this section is about was removed
+outright on 2026-09-16 (§12). Nothing below describes code the port still has, and it
+is kept for two reasons: the reasoning is what justified *not* porting upstream's
+signed-byte encoding, and §12's evidence refers back to the terrain behaviour measured
+here. Read §12 first if you want to know what the port does now.
+
 **Upstream, still present at `fb3e2d4`.** Two defects that arrived together with
 `8c71d14`, both on the terrain path. The port fixes both, and then departs from upstream
 twice more, deliberately: it stores elevation in a signed byte, and it lets the ground be
@@ -285,3 +291,80 @@ half-applying them` and `setParams refuses an inverted range atomically`.
 World serialisation: upstream saves and loads worlds through `QDataStream`
 (save/save-as/autosave). The port has no persistence. Note that upstream itself does
 **not** serialise `viewMode`, so a loaded world always renders in Default.
+
+## 12. Diverged: there is no terrain at all
+
+**Decision (Scott Ellis, 2026-09-16).** The port has no terrain: no elevation grid, no
+digging, no climb cost, no terrain view, no roughness control. The world is flat and
+nothing in the simulation changes the ground. This is a deliberate divergence from
+upstream, made for a reason that has nothing to do with fidelity — and it is recorded
+in the form the decision needs: what was removed, what was kept, and the measurement
+that justified it.
+
+**Why.** The ground appears to sterilise the world. Upstream's terrain is not static
+scenery — deaths deposit payload and digs write relief, so the world's own bugs
+continually redraw the surface under themselves — and the move rule charges
+`moveEnergy * (climb + 1)` per step. Measured over 24 seeds (2024, 1-23), each run
+10,000 ticks and then a forced die-off followed by 60,000 more, with a separate arm of
+60,000 ticks from genesis (`tools/escape-probe.mts`):
+
+| | re-ignites after a die-off | reproduces from a fresh world |
+|---|---|---|
+| no terrain (this port) | **16 / 24** | **16 / 24** |
+| terrain, roughness 20 | 0 / 24 | 0 / 24 |
+| terrain, roughness 0 (seeded flat) | 0 / 24 | 3 / 24 |
+
+The third row is the control that matters: with the terrain code present but seeded
+*flat* — which is the world this port now has by construction — a die-off was still
+terminal in 24 of 24, and a fresh world reproduced in 3 of 24. So the blocker is the
+terrain feature rather than its amplitude, and the seeding RNG is not what moves the
+result.
+
+Three limits on that evidence, stated because the honest version of a decision record
+includes what it does not cover:
+
+- **It is not a complete explanation.** 8 of the 24 seeds never re-ignite even with the
+  terrain gone (1, 3, 7, 8, 13, 20, 22, 23). The ground was *a* barrier, not the only
+  one: removing it moves the odds from 0/24 to 16/24, and does not make the world safe.
+- **The mechanism is a reading, not a measurement** — and the tool that could have
+  settled it is deleted with the feature. `tools/repro-probe.mts` (git history) swept
+  roughness and reported mean step cost alongside the population's energy
+  distribution, which is precisely the difference between "the bugs cannot afford the
+  trip" and "the bugs never reach the threshold": two mechanisms that look identical
+  from outside and would want opposite responses. What is measured is the behaviour.
+  The explanation I give for it — relief makes the trip expensive, and a reproducing
+  world needs a roamer to reach an occupied cell — is an inference that fits the
+  behaviour, not a measurement that establishes it.
+- **It answers the die-off question, not the long-run one.** On the finer statistic of
+  replacements per death after a die-off, flat ground improved the early run
+  (0.46-0.57 against 0.31) and still decayed to ~0.3 later in the run. This change was
+  made on the strength of the table above; the table above is all it claims.
+
+**What was removed.** The terrain array and its accessors (`setTerrain`, `terrainAt`,
+`seedTerrain`), the elevation clamp with `MAX_TERRAIN` and `TERRAIN_FLAT`, the terrain
+writes in the dig and payload-drop branches, the bug's `payload` field (it existed only
+to be spent on digs and to multiply the move cost), the climb term in the move rule — a
+flat world's climb is always 0 — the deposit a death made into its own cell, and the
+`VM_TERRAIN` view branch with its control. Two tools went with it, `terrain-probe.mts`
+and `repro-probe.mts`, because they could not be written against anything else. The
+terrain measurements in `web/README.md` also went; git history keeps them.
+
+**What was kept.** The VM's input layout is upstream architecture — 27 slots in three
+nine-slot sense groups — and it is unchanged. The terrain group (slots 9-17) still
+exists and is still written every tick: in the SIGHTED model with the constant
+`TERRAIN_SENSE = 1` (`src/sim/params.ts`), and in the BLIND model with the cell's own
+energy byte, which is the shipped bug reproduced and is left exactly as it was — the
+sense model is part of the selective environment, so editing it here would have
+confounded two changes in one measurement. Collapsing the layout to 18 slots would have renumbered the
+sense channels that §1 and §2 are about, in a change that is supposed to be about the
+ground. One test pins that this is not a silent no-op: every bug's nine terrain-sense
+bytes read that constant, whatever the bug's position and whatever the tick — so if
+the terrain channel ever comes back, that test fails first, which is the point of it.
+
+**The fingerprint changed, and had to.** `3030175021` (`0xb49ccd2d`) →
+**`2368350942`** (`0x8d2a2ade`), seed 2024, SIGHTED, 200 steps. The fingerprint hashes
+every view index plus the counters, so removing a view mode and changing what a bug
+senses *must* move it — a changed fingerprint is a failure unless a recorded divergence
+explains it, and this section is that explanation. The components move with it and are
+pinned in `test/fingerprint.test.ts`: pop 81, time 200, maxGen 2, births 21, deaths 59,
+bugEnergy 40106, energyEnergy 76019.

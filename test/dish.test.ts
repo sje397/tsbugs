@@ -13,27 +13,20 @@ import assert from 'node:assert/strict';
 
 import {
   clampByteRamp,
-  clampElevation,
-  elevationByte,
   offX,
   offY,
   PetriDish,
   senseByte,
-  terrainColor,
   ViewMode,
   wrapX,
   wrapY,
 } from '../src/sim/dish.js';
 import {
   DEFAULT_PARAMS,
-  ENERGY_COLOR,
   EnergyLayout,
   MAX_BUG_COLOR,
   SenseModel,
-  TERRAIN_FLAT,
-  TERRAIN_MAX,
-  TERRAIN_MIN,
-  TERRAIN_RAMP_SCALE,
+  TERRAIN_SENSE,
   type WorldParams,
 } from '../src/sim/params.js';
 import { Rng } from '../src/sim/rng.js';
@@ -48,7 +41,6 @@ const ALL_VIEW_MODES = [
   ViewMode.AGE,
   ViewMode.DNA_SIZE,
   ViewMode.DNA_VALUE,
-  ViewMode.TERRAIN,
 ];
 
 function run(steps: number, overrides: Partial<WorldParams> = {}, seed = 1234): PetriDish {
@@ -178,16 +170,16 @@ test('the shipped sense model blinds the energy channel and flattens altitude', 
 
 test('a sensory reading saturates at both ends instead of wrapping (upstream UB)', () => {
   // senseByte is upstream's float -> unsigned char conversion with the edge
-  // behaviour pinned: callers scale a value into 0..255 first, and the upper
+  // behaviour pinned: the caller scales a value into 0..255 first, and the upper
   // edge is reachable in ordinary play because energy deposits are additive with
-  // no cap. It is now the energy channel's conversion only — terrain carries its
-  // signed byte unwrapped (elevationByte) — so the maxima below are explicit
-  // rather than read from the terrain constant they used to share.
+  // no cap. Energy is the only caller now that terrain is gone (DIVERGENCES.md
+  // §12), so the divisors below are explicit rather than read from a constant the
+  // two channels used to share.
   //
   // The failure mode is not merely arbitrary. Wrapped mod 256, a reading of -1
   // comes back as 255, near-maximum, which inverts the signal the VM evolves
   // against rather than blurring it.
-  const M = 10; // upstream's MAX_TERRAIN, kept as the sweep's shape
+  const M = 10; // an arbitrary divisor: the scaling must not depend on which one
 
   assert.equal(senseByte(-1, M), 0, 'below the range saturates low, it does not wrap high');
   assert.equal(senseByte(-0.4, M), 0);
@@ -335,95 +327,13 @@ test("per-bug view modes read the cell's first bug", () => {
   );
 });
 
-test('the terrain view is unreadable where a bug stands (upstream quirk)', () => {
-  const dish = run(200, {}, 51);
-  dish.setViewMode(ViewMode.TERRAIN);
-
-  let withBugs = 0;
-  let flat = 0;
-
-  for (let hash = 0; hash < CELLS; hash++) {
-    if (dish.bugsAt(hash).length > 0) {
-      withBugs++;
-      assert.equal(
-        dish.viewCol[hash],
-        ENERGY_COLOR,
-        `cell ${hash} holds a bug, so TERRAIN cannot show its terrain`,
-      );
-      continue;
-    }
-    if (dish.terrainAt(hash) === TERRAIN_FLAT) {
-      flat++;
-      // Upstream rendered flat ground as BKG_COLOR (black), because flat was a
-      // special value rather than a level. It is a level now, so it takes its
-      // place just past mid-ramp (139: the ramp is scaled to TERRAIN_RAMP_SCALE,
-      // and flat is one level above sea level) — and the absolute number here is
-      // what can tell the two behaviours apart.
-      assert.equal(dish.viewCol[hash], 139, `flat ground at ${hash} should sit just past mid-ramp`);
-    }
-  }
-
-  assert.ok(withBugs > 0, 'the fixture must contain bugs');
-  assert.ok(flat > 0, 'the fixture must contain untouched flat ground');
-});
-
-
-// -------------------------------------------------------------------- terrain
+// ------------------------------------------------------- view ramps / terrain sense
 //
-// Terrain is a signed byte here (-127..+127, flat at 1) rather than upstream's
-// int running up from 0. Two things follow that are worth testing separately:
-// the encoding the VM receives, which is two's-complemented, and whether the
-// population can actually reach the range at all — it turns out it barely can,
-// which is why the landscape has to be seeded. See DIVERGENCES.md.
-
-test('elevation is a signed byte: a hole reaches the VM as a value above flat ground', () => {
-  // The VM reads its input slots as plain bytes, so a signed elevation arrives
-  // two's-complemented: down is numerically up. That encoding is what a bug
-  // evolves against, and it is why flat ground (1) and a hole one deep (255) are
-  // about as far apart as two readings can be.
-  assert.equal(elevationByte(TERRAIN_FLAT), 1);
-  assert.equal(elevationByte(0), 0);
-  assert.equal(elevationByte(-1), 255);
-  assert.equal(elevationByte(TERRAIN_MIN), 129); // -127
-
-  // And the clamp is what keeps that encoding from flipping. A signed byte
-  // cannot hold 128, so an unclamped write does not saturate — it stores -128,
-  // turning the highest ground in the world into the deepest pit.
-  assert.equal(clampElevation(128), TERRAIN_MAX);
-  assert.equal(clampElevation(TERRAIN_MAX + 1000), TERRAIN_MAX);
-  assert.equal(clampElevation(-128), TERRAIN_MIN);
-  assert.equal(clampElevation(0), 0);
-  assert.equal(clampElevation(TERRAIN_FLAT), TERRAIN_FLAT);
-
-  // The reachable path to that overflow is removeBug(): a dying bug's payload
-  // goes back onto the ground with no guard at all (petri_dish.cpp:481), and a
-  // bug can die anywhere. That is argued from the source rather than from a run,
-  // because reaching an edge takes 126 deposits onto one cell.
-  const byte = new Int8Array(1);
-  byte[0] = 128;
-  assert.equal(byte[0], -128, 'the wrap this clamp exists to prevent');
-
-  // So the clamp has to sit at the store, not at each call site — and the store
-  // can be driven past both ends directly, by seeding well beyond the range with
-  // the blur switched off. Unblurred, a spread of ±200 lands thousands of cells
-  // beyond each end on a grid this size, so saturation at exactly the two
-  // extremes is what a clamped store produces and what a wrapping one cannot:
-  // wrapped, +128 becomes -128 and the highest ground on the map turns into a
-  // pit that is out of range at the bottom.
-  const dish = new PetriDish({ ...DEFAULT_PARAMS }, new Rng(1));
-  dish.seedTerrain(200, new Rng(2), 0);
-
-  let min = TERRAIN_FLAT;
-  let max = TERRAIN_FLAT;
-  for (let hash = 0; hash < CELLS; hash++) {
-    const e = dish.terrainAt(hash);
-    assert.ok(e >= TERRAIN_MIN && e <= TERRAIN_MAX, `seeded cell ${hash} holds ${e}`);
-    if (e < min) min = e;
-    if (e > max) max = e;
-  }
-  assert.equal(min, TERRAIN_MIN, 'the floor saturates rather than wrapping');
-  assert.equal(max, TERRAIN_MAX, 'the ceiling saturates rather than wrapping');
-});
+// Two things that outlived the terrain feature. The view ramps saturate rather than
+// wrapping — upstream's `unsigned char` return, fixed, and it applies to every view
+// mode rather than only the one that used to show ground (DIVERGENCES.md §9). And the
+// VM's terrain-sense group (slots 9-17) is still fed, in the SIGHTED model with a
+// constant, because the 27-slot input layout is the genome's contract (§12).
 
 test('the view ramps saturate at the ends of the ramp instead of wrapping', () => {
   // Upstream returned `unsigned char` from every view mode, so a value past the
@@ -445,153 +355,32 @@ test('the view ramps saturate at the ends of the ramp instead of wrapping', () =
   }
 });
 
-test('the terrain view maps elevation monotonically, holes at the red end', () => {
-  let previous = 0;
-  for (let e = TERRAIN_MIN; e <= TERRAIN_MAX; e++) {
-    const c = terrainColor(e);
-    assert.ok(c >= previous, `terrainColor must not decrease with elevation (at ${e})`);
-    assert.ok(c >= 1 && c <= MAX_BUG_COLOR, `terrainColor(${e}) = ${c}`);
-    previous = c;
-  }
+test('the terrain sense is constant — and the probe would have seen it if it were not', () => {
+  // The channel is kept: the 27-slot input layout is the genome's contract, so
+  // deleting nine slots would change what every program means rather than what
+  // the world contains. What matters is that it carries no terrain at all — one
+  // reading, everywhere, forever.
+  //
+  // The second assertion is the control that makes the first mean something. It
+  // reads a *different* window through the same code path and requires it to
+  // vary, so a constant here cannot be a probe that reads nothing.
+  const dish = run(400, { senseModel: SenseModel.SIGHTED }, 77);
+  const terrain = new Set<number>();
+  const vision = new Set<number>();
+  let bugs = 0;
 
-  // The readability property, and the one that was actually broken: a single
-  // level of elevation must move the colour a *visible* distance. Mapping the
-  // signed byte's full range gave one palette index per level, so a seeded
-  // world's relief of -11..+14 occupied palette 116..141 — a flat-looking yellow
-  // field in the one view whose job is to show relief. Revert the scale to
-  // `elevation + 127` and every step here drops to 1, so this fails.
-  // Both ends of the ramp saturate one level early (terrain -10 computes 0 and
-  // is held at 1; terrain 10 computes 254 and is held at 252), so the steps that
-  // count are the ones fully inside the range, -9..8.
-  for (let e = -(TERRAIN_RAMP_SCALE - 1); e <= TERRAIN_RAMP_SCALE - 2; e++) {
-    const step = terrainColor(e + 1) - terrainColor(e);
-    assert.ok(
-      step >= 12,
-      `one level of elevation must be visible: terrainColor(${e + 1}) - terrainColor(${e}) = ${step}`,
-    );
-  }
-  // The last step up is shorter, and only because the top of the ramp is a
-  // saturation rather than a wrap: the formula reaches 254 at terrain 10 and
-  // MAX_BUG_COLOR is 252 (253/254/255 being cyan, poison and energy). Stated
-  // rather than absorbed into a looser bound.
-  assert.equal(
-    terrainColor(TERRAIN_RAMP_SCALE) - terrainColor(TERRAIN_RAMP_SCALE - 1),
-    11,
-    'the final step is short by exactly the two reserved indices at the top',
-  );
+  dish.forEachBug((bug) => {
+    bugs++;
+    for (let d = 0; d < 9; d++) vision.add(bug.processor.readIn(d));
+    for (let d = 9; d < 18; d++) terrain.add(bug.processor.readIn(d));
+  });
 
-  // The ramp is scaled to the relief it is meant to resolve, and saturates
-  // outside it. upstream: terrain 0 landed at 127 and 10 at 254, so flat ground
-  // (1) sits just past mid-ramp and the extremes are the ramp's ends.
-  assert.equal(terrainColor(0), 127, 'sea level is the middle of the ramp');
-  assert.equal(terrainColor(TERRAIN_FLAT), 139, 'flat ground sits just past mid-ramp');
-  assert.equal(terrainColor(-TERRAIN_RAMP_SCALE), 1, 'rock bottom is the red end');
-  assert.equal(terrainColor(TERRAIN_RAMP_SCALE), MAX_BUG_COLOR, 'the ramp top is the green end');
-
-  assert.equal(terrainColor(TERRAIN_MIN), 1, 'the type floor saturates at the red end');
-  assert.equal(terrainColor(TERRAIN_MAX), MAX_BUG_COLOR, 'the type ceiling saturates at the green end');
-});
-
-test('seeded terrain gives the world relief, and the population does not flatten it', () => {
-  // Upstream starts flat and a flat world stays flat: measured over 2000 ticks,
-  // the population disturbs ~2% of the grid and digs no more than 1-2 below flat
-  // ground, because a bug that digs is left carrying the payload it must put
-  // back down before it can dig again (tools/terrain-probe shows the numbers).
-  // So the terrain view has nothing to show unless the ground is seeded, and the
-  // seeded ground has to survive contact with the bugs to be worth showing.
-  const dish = new PetriDish({ ...DEFAULT_PARAMS }, new Rng(4242));
-  dish.setViewMode(ViewMode.TERRAIN);
-  dish.seedTerrain(20, new Rng(99));
-
-  const relief = () => {
-    let holes = 0;
-    let hills = 0;
-    let min = TERRAIN_FLAT;
-    let max = TERRAIN_FLAT;
-    for (let hash = 0; hash < CELLS; hash++) {
-      const e = dish.terrainAt(hash);
-      if (e < TERRAIN_FLAT) holes++;
-      else if (e > TERRAIN_FLAT) hills++;
-      if (e < min) min = e;
-      if (e > max) max = e;
-    }
-    return { holes, hills, spread: max - min };
-  };
-
-  const seeded = relief();
-  assert.ok(seeded.holes > 1000, `seeded ground has holes: ${seeded.holes}`);
-  assert.ok(seeded.hills > 1000, `seeded ground has hills: ${seeded.hills}`);
-  assert.ok(seeded.spread >= 8, `seeded relief: ${seeded.spread}`);
-
-  // Seeding refreshes the pixel cache, so the first painted frame is the seeded
-  // ground rather than the flat map the array held a moment before.
-  for (let hash = 0; hash < CELLS; hash++) {
-    if (dish.bugsAt(hash).length > 0) continue;
-    assert.equal(dish.viewCol[hash], terrainColor(dish.terrainAt(hash)));
-  }
-
-  // Same seed, same ground: seeding is part of the deterministic world.
-  const twin = new PetriDish({ ...DEFAULT_PARAMS }, new Rng(4242));
-  twin.seedTerrain(20, new Rng(99));
-  for (let hash = 0; hash < CELLS; hash++) {
-    assert.equal(twin.terrainAt(hash), dish.terrainAt(hash), `cell ${hash} differs`);
-  }
-
-  const before = relief();
-  for (let t = 0; t < 1000; t++) dish.step();
-  const after = relief();
-  assert.ok(after.holes > 1000, `holes left after 1000 ticks: ${after.holes}`);
-  assert.ok(after.hills > 1000, `hills left after 1000 ticks: ${after.hills}`);
+  assert.ok(bugs > 50, `the fixture must contain bugs to sense (${bugs})`);
+  assert.deepEqual([...terrain], [TERRAIN_SENSE], 'the terrain channel must carry no terrain');
   assert.ok(
-    after.spread > before.spread / 2,
-    `relief collapsed from ${before.spread} to ${after.spread}`,
+    vision.size > 1,
+    `control: the same probe sees the vision channel vary (${vision.size} distinct readings)`,
   );
-});
-
-test('seeded ground is rolling, not spiky — the world moves by climbing', () => {
-  // A per-cell random field is not terrain: the cost of every step would be an
-  // independent draw, and the climb rule would have nothing to be a gradient of.
-  // So the seeding blurs. Stated as a comparison between this code's own blurred
-  // and unblurred output, which needs no invented constant — the measured gap at
-  // roughness 20 is 1.26 against 13.7, roughly 11x.
-  const meanGradient = (passes: number) => {
-    const dish = new PetriDish({ ...DEFAULT_PARAMS }, new Rng(1));
-    dish.seedTerrain(20, new Rng(99), passes);
-
-    const { width, height } = DEFAULT_PARAMS;
-    let sum = 0;
-    for (let x = 0; x < width; x++) {
-      for (let y = 0; y < height; y++) {
-        // Neighbour slot 5 is (x+1, y) in the macros' layout: d / 3 picks the
-        // row and d % 3 the column, so slot 4 is the cell itself.
-        const right = wrapX(5, x, width) * height + wrapY(5, y, height);
-        sum += Math.abs(dish.terrainAt(x * height + y) - dish.terrainAt(right));
-      }
-    }
-    return sum / CELLS;
-  };
-
-  const spiky = meanGradient(0);
-  const rolling = meanGradient(2);
-  assert.ok(rolling > 0, 'there must be some gradient left to climb');
-  assert.ok(
-    rolling < spiky / 4,
-    `blurred ground should be far smoother than white noise (${rolling} vs ${spiky})`,
-  );
-});
-
-test('elevation stays inside the signed byte under both sensory models', () => {
-  // The invariant the clamp exists for, checked over a real run rather than
-  // argued. It is not what exercises the clamp — reaching an edge needs 126
-  // deposits onto one cell — but it would catch a path that wrote terrain
-  // directly and skipped the bound, which is the mistake this replaced.
-  for (const senseModel of [SenseModel.SIGHTED, SenseModel.AS_SHIPPED]) {
-    const dish = run(600, { senseModel }, 31);
-    for (let hash = 0; hash < CELLS; hash++) {
-      const e = dish.terrainAt(hash);
-      assert.ok(e >= TERRAIN_MIN && e <= TERRAIN_MAX, `${senseModel} cell ${hash} holds ${e}`);
-    }
-  }
 });
 
 test('a seed fixes the whole trajectory', () => {
