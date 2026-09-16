@@ -14,9 +14,14 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { resolve, join, sep, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { networkInterfaces } from 'node:os';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const PORT = Number(process.env.PORT ?? 8077);
+// Loopback by default: a dev server that is open to the LAN unless asked is a
+// surprise, not a feature. `HOST=0.0.0.0 npm run web` binds every interface, which
+// is what a phone on the same wifi needs.
+const HOST = process.env.HOST ?? '127.0.0.1';
 
 const TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -93,7 +98,17 @@ const server = createServer(async (req, res) => {
   createReadStream(file).pipe(res);
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, HOST, () => {
   console.log(`tsbugs: http://localhost:${PORT}/`);
+  if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
+    // Printing the address someone else has to type beats making them go find it.
+    for (const addrs of Object.values(networkInterfaces())) {
+      for (const a of addrs ?? []) {
+        if (a.family === 'IPv4' && !a.internal) {
+          console.log(`        http://${a.address}:${PORT}/   (from another device)`);
+        }
+      }
+    }
+  }
   console.log(`serving ${ROOT}`);
 });

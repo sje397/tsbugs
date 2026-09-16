@@ -49,6 +49,16 @@
   .stats span:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
   .gen { color: var(--hot); }
   footer { color: var(--dim); font-size: 11px; margin-top: 8px; }
+  /* A phone: put the panel under the world and let the canvas have the width. The
+     backing store stays 240*scale; this only changes the CSS size, and
+     `image-rendering: pixelated` above means it scales without smoothing. The
+     world is 240 px, so a non-integer display scale gives slightly irregular
+     pixel widths — visible, and the price of fitting the screen. */
+  @media (max-width: 860px) {
+    body { flex-direction: column; padding: 10px; gap: 12px; }
+    canvas { width: 100%; height: auto; }
+    #panel { width: 100%; }
+  }
 </style>
 </head>
 <body>
