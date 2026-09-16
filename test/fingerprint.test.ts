@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { PetriDish, ViewMode } from '../src/sim/dish.js';
-import { DEFAULT_PARAMS, SenseModel } from '../src/sim/params.js';
+import { DEFAULT_PARAMS } from '../src/sim/params.js';
 import { Rng } from '../src/sim/rng.js';
 import { fingerprint } from '../src/sim/fingerprint.js';
 
 function run(seed = 2024, steps = 200): PetriDish {
-  const dish = new PetriDish({ ...DEFAULT_PARAMS, senseModel: SenseModel.SIGHTED }, new Rng(seed));
+  const dish = new PetriDish(DEFAULT_PARAMS, new Rng(seed));
   for (let i = 0; i < steps; i++) dish.step();
   return dish;
 }
@@ -32,14 +32,19 @@ test('a fixed run reproduces exactly', () => {
 test('the fingerprint of a fixed run is pinned', () => {
   // The port's own output, NOT upstream's. This catches unintended drift; it
   // cannot distinguish a faithful simulation from a consistently wrong one.
-  assert.equal(fingerprint(run(2024, 200)), 0x8d2a2ade);
+  //
+  // Moved twice by decision, never by accident: 0xb49ccd2d when the terrain
+  // feature was removed (§12), and 0x8d6b7364 when the altitude sense group and
+  // the shipped-sense switch went with it (§13). Both changes alter what a program
+  // reads, so the hash has to move; a move without a recorded reason is a bug.
+  assert.equal(fingerprint(run(2024, 200)), 0x8d6b7364);
 });
 
 test('the fingerprint moves when anything that shapes the run moves', () => {
   // Each case is checked to differ from the base before it is asserted on, so
   // none of these can pass by comparing a value against itself.
   const base = fingerprint(run(2024, 200));
-  assert.equal(base, 0x8d2a2ade, 'precondition: the base run is the pinned one');
+  assert.equal(base, 0x8d6b7364, 'precondition: the base run is the pinned one');
   assert.notEqual(fingerprint(run(2024, 201)), base, 'one more tick');
   assert.notEqual(fingerprint(run(2025, 200)), base, 'a different seed');
 });

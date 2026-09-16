@@ -19,11 +19,13 @@ terrain correctly, wrote the *energy* reading into the terrain buffer, and passe
 Bugs have therefore been unable to see energy or a terrain gradient since
 `8c71d14` (19 Nov 2011).
 
-**The port.** Defaults to `SenseModel.SIGHTED`, which is `fb3e2d4` semantics — the
-graded, correctly routed reading. `SenseModel.AS_SHIPPED` reproduces the pre-fix
-behaviour, and `test/dish.test.ts` runs the model comparison over both so the
-difference is pinned rather than described. `AS_SHIPPED` exists to reproduce the
-original's actual behaviour, not as a supported mode.
+**The port.** Implements `fb3e2d4` semantics — the graded, correctly routed reading —
+and nothing else. There is no switch (§13), so this is the port's only sensory
+model. Two tests in `test/dish.test.ts` pin it: one that a bug fills colour 0-8 and
+energy 9-17 with its own readings, and one that the energy window carries a real 3x3
+gradient across the world. The second is the guard for this section — the shipped
+build's failure mode was nine slots reading one value, and any return of that shape
+fails there.
 
 ## 2. Fixed: the sensory scaling was undefined behaviour
 
@@ -349,17 +351,13 @@ flat world's climb is always 0 — the deposit a death made into its own cell, a
 and `repro-probe.mts`, because they could not be written against anything else. The
 terrain measurements in `web/README.md` also went; git history keeps them.
 
-**What was kept.** The VM's input layout is upstream architecture — 27 slots in three
-nine-slot sense groups — and it is unchanged. The terrain group (slots 9-17) still
-exists and is still written every tick: in the SIGHTED model with the constant
-`TERRAIN_SENSE = 1` (`src/sim/params.ts`), and in the BLIND model with the cell's own
-energy byte, which is the shipped bug reproduced and is left exactly as it was — the
-sense model is part of the selective environment, so editing it here would have
-confounded two changes in one measurement. Collapsing the layout to 18 slots would have renumbered the
-sense channels that §1 and §2 are about, in a change that is supposed to be about the
-ground. One test pins that this is not a silent no-op: every bug's nine terrain-sense
-bytes read that constant, whatever the bug's position and whatever the tick — so if
-the terrain channel ever comes back, that test fails first, which is the point of it.
+**What was kept, at the time.** The VM's input layout is upstream architecture — 27
+slots in three nine-slot groups. The terrain group (slots 9-17) was left in place and
+written every tick with the constant `TERRAIN_SENSE = 1`, on the argument that
+collapsing the layout would renumber the sense channels §1 and §2 are about, in a
+change that was supposed to be about the ground. **That argument expired with the
+switch: the group was removed on 2026-09-17 along with the shipped-sense model, and
+the layout is now 20 slots (§13).**
 
 **The fingerprint changed, and had to.** `3030175021` (`0xb49ccd2d`) →
 **`2368350942`** (`0x8d2a2ade`), seed 2024, SIGHTED, 200 steps. The fingerprint hashes
@@ -368,3 +366,42 @@ senses *must* move it — a changed fingerprint is a failure unless a recorded d
 explains it, and this section is that explanation. The components move with it and are
 pinned in `test/fingerprint.test.ts`: pop 81, time 200, maxGen 2, births 21, deaths 59,
 bugEnergy 40106, energyEnergy 76019.
+
+---
+
+## 13. Diverged: one sensory model, and no altitude group
+
+**Decided, not drifted.** §1 kept upstream's broken senses as a selectable mode so the
+difference could be demonstrated rather than asserted, and §12 kept the nine-slot
+altitude group as a constant because the 29-slot layout was treated as the genome's
+contract. Both were reproduction aids, and both were removed on 2026-09-17 by the
+owner's instruction. Three things follow, and they are the three worth recording.
+
+**The switch was never fidelity.** Upstream had exactly one sensory space: the broken
+one, fixed in `fb3e2d4`. `AS_SHIPPED` was the port's diagnostic, not a mode of the
+original, and a diagnostic can be retired once its finding is written down. The finding
+stands in §1 and in `web/README.md`, which keeps the measurements it produced and now
+marks them historical — they cannot be re-run here, and a number that cannot be re-run
+must say so where it is quoted.
+
+**A constant channel is not a sensory channel.** The altitude group read `1` at every
+cell, every tick, forever. It carried no information about the world; a program could
+only branch on it, and a human reading the layout could mistake it for a measurement.
+Nine slots of dead input are worse than nine fewer slots. So the layout is **20:
+colour 0-8, energy 9-17, the bug's own energy as a little-endian pair at 18-19** —
+upstream's order with the hole closed, not a renumbering that shuffles the survivors.
+`INPUTS` in `src/sim/processor.ts` carries the reason.
+
+**The cost, stated plainly.** Slot 9 is now grid energy where it used to be the constant
+1, and the own-energy pair moved from 27/28 to 18/19. A faithful reading of upstream's
+*actual* pre-fix behaviour is no longer available from this port — git history is the
+only place it lives. Fidelity to intent is this port's charter (§ preamble), and the
+intent never included an altitude reading on flat ground.
+
+**The fingerprint changed, and had to.** `2368350942` (`0x8d2a2ade`) →
+**`2372629348`** (`0x8d6b7364`), seed 2024, 200 steps. The hash covers every view index
+and the counters, and this change alters what every program reads — so it could not
+stay put. New components, pinned in `test/fingerprint.test.ts`: pop 77, time 200,
+maxGen 3, births 49, deaths 74, bugEnergy 40030, energyEnergy 76067. Population at 200
+ticks falls slightly (81 → 77) — noise in a chaotic world, not a signal, and not a
+reason to prefer one layout over the other.

@@ -77,18 +77,23 @@ export class Bug {
     return child;
   }
 
-  /** bug.cpp:105 — the 3x3 senses, in channel order. */
-  setVision(vision: Uint8Array, altitude: Uint8Array, energy: Uint8Array): void {
+  /**
+   * bug.cpp:105, minus the altitude channel that no longer exists (DIVERGENCES.md
+   * §13) — colour 0-8, energy 9-17. Upstream's method is `set_vision`, which
+   * named one of the three channels it carried; two channels in, it is renamed
+   * for what it does.
+   */
+  setSenses(vision: Uint8Array, energy: Uint8Array): void {
     this.processor.setInMulti(0, vision);
-    this.processor.setInMulti(9, altitude);
-    this.processor.setInMulti(18, energy);
+    this.processor.setInMulti(9, energy);
   }
 
   /** bug.cpp:116 — one VM tick and its consequences. */
   update(): void {
-    // The bug's own energy is exposed as a 16-bit little-endian pair.
-    this.processor.setIn(27, Math.trunc(this.energy / 256) & 0xff);
-    this.processor.setIn(28, this.energy % 256);
+    // The bug's own energy is exposed as a 16-bit little-endian pair. Upstream's
+    // slots 27/28, moved down with the altitude group's removal (§13).
+    this.processor.setIn(18, Math.trunc(this.energy / 256) & 0xff);
+    this.processor.setIn(19, this.energy % 256);
 
     this.processor.run();
 

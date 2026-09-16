@@ -31,8 +31,19 @@
 
 import type { RandomSource } from './rng.js';
 
-/** processor.h: INPUTS = 9 + 9 + 9 + 2 (colour, altitude, energy, energy-short). */
-export const INPUTS = 29;
+/**
+ * processor.h defines INPUTS as 9 + 9 + 9 + 2 — colour, altitude, energy, and a
+ * short carrying the bug's own energy (the comment there calls it "pain?").
+ *
+ * DIVERGENCE (DIVERGENCES.md §13): the altitude group is gone, so this is
+ * 9 + 9 + 2 = 20. The world has no terrain and nothing can create any, so nine
+ * slots holding one constant carry no information a program can act on — and a
+ * channel that always reads 1 is worse than an absent one, because a program can
+ * still branch on it and a reader can still mistake it for a measurement. The
+ * survivors keep upstream's order with the hole closed: colour 0-8, energy 9-17,
+ * own energy 18-19.
+ */
+export const INPUTS = 20;
 /** processor.h: OUTPUTS = 4 (direction, colour, split, action). */
 export const OUTPUTS = 4;
 

@@ -21,7 +21,7 @@
  */
 
 import { PetriDish, ViewMode } from '../dist/src/sim/dish.js';
-import { DEFAULT_PARAMS, SenseModel, ENERGY_COLOR, POISON_COLOR, MAX_BUG_COLOR, BKG_COLOR } from '../dist/src/sim/params.js';
+import { DEFAULT_PARAMS, ENERGY_COLOR, POISON_COLOR, MAX_BUG_COLOR, BKG_COLOR } from '../dist/src/sim/params.js';
 import { Rng } from '../dist/src/sim/rng.js';
 import { fingerprint } from '../dist/src/sim/fingerprint.js';
 
@@ -76,9 +76,7 @@ let lastMs = performance.now();
 function buildWorld() {
   const size = Number($('size').value);
   const seed = Number($('seed').value);
-  const senseModel = $('senses').value === 'AS_SHIPPED' ? SenseModel.AS_SHIPPED : SenseModel.SIGHTED;
-
-  dish = new PetriDish({ ...DEFAULT_PARAMS, width: size, height: size, senseModel }, new Rng(seed));
+  dish = new PetriDish({ ...DEFAULT_PARAMS, width: size, height: size }, new Rng(seed));
 
   off = document.createElement('canvas');
   off.width = size;

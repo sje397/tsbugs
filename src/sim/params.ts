@@ -19,23 +19,6 @@ export enum EnergyLayout {
   CHANGE = 6,
 }
 
-/**
- * Which sensory model the VM sees.
- *
- * SIGHTED    — what the code in petri_dish.cpp means to do.
- * AS_SHIPPED — what the 2013 release actually did.
- *
- * The original passed the terrain output array where the energy output was
- * expected, so `en` was never written and `ter` held a flat copy of the energy
- * grid. At -O3 (QtBugs.pro:12) the uninitialised `en` reads resolved to a
- * stable zero, so this reproduces the shipped build rather than the undefined
- * behaviour: `ter` = energy (uniform across the 3x3 window), `en` = all zeros.
- */
-export enum SenseModel {
-  SIGHTED = 'sighted',
-  AS_SHIPPED = 'as-shipped',
-}
-
 export interface WorldParams {
   /** min_data */
   minData: number;
@@ -79,11 +62,6 @@ export interface WorldParams {
   energyLayout: EnergyLayout;
   /** kill_on_edge */
   killOnEdge: boolean;
-  /**
-   * Not in the original. Selects between the intended senses and the shipped
-   * ones so the two can be observed side by side.
-   */
-  senseModel: SenseModel;
 }
 
 /** Exactly the defaults from WorldParams::WorldParams(). */
@@ -109,21 +87,7 @@ export const DEFAULT_PARAMS: WorldParams = {
   poison: 5,
   energyLayout: EnergyLayout.DOT,
   killOnEdge: true,
-  senseModel: SenseModel.SIGHTED,
 };
-
-/**
- * The reading the VM's terrain sense channel (input slots 9-17) now carries,
- * everywhere, forever.
- *
- * The world has no terrain: it is flat, and nothing can change it. Flat ground
- * encoded as the two's-complement byte upstream's `signed char` channel used, so
- * the channel reads 1 at every cell. The channel itself is kept because the
- * 27-slot input layout is the genome's contract — a program's every branch is
- * written against it — and deleting nine slots would change what every genome
- * means rather than what the world contains.
- */
-export const TERRAIN_SENSE = 1;
 
 /** petri_dish.cpp:158-161 — the reserved view-colour values. */
 export const ENERGY_COLOR = 255;

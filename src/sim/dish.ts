@@ -31,15 +31,7 @@
 import { Bug, DIR_STAY } from './bug.js';
 import { CoordPicker } from './coords.js';
 import type { RandomSource } from './rng.js';
-import {
-  BKG_COLOR,
-  ENERGY_COLOR,
-  MAX_BUG_COLOR,
-  POISON_COLOR,
-  TERRAIN_SENSE,
-  SenseModel,
-  type WorldParams,
-} from './params.js';
+import { BKG_COLOR, ENERGY_COLOR, MAX_BUG_COLOR, POISON_COLOR, type WorldParams } from './params.js';
 
 /** petri_dish.h:38 — ordinals match the original's menu order. */
 export enum ViewMode {
@@ -49,16 +41,6 @@ export enum ViewMode {
   AGE = 3,
   DNA_SIZE = 4,
   DNA_VALUE = 5,
-}
-
-/**
- * `(unsigned char)` conversion, for values that are legitimately in 0..255.
- *
- * The simulation is mostly byte-valued, and the as-shipped sense model needs the
- * wrapping conversion to reproduce the original's arithmetic exactly.
- */
-function toByte(value: number): number {
-  return Math.trunc(value) & 0xff;
 }
 
 /**
@@ -191,9 +173,9 @@ export class PetriDish {
   private readonly activeSet = new Set<number>();
 
   private readonly coords = new CoordPicker();
+  /** VM input slots 0-8: the 3x3 window of view colours. */
   private readonly vision = new Uint8Array(9);
-  /** VM input slots 9-17: upstream's elevation window, constant now (TERRAIN_SENSE). */
-  private readonly terrainSense = new Uint8Array(9);
+  /** VM input slots 9-17: the 3x3 window of grid-energy readings. */
   private readonly energySense = new Uint8Array(9);
 
   bugEnergy = 0;
@@ -498,37 +480,24 @@ export class PetriDish {
     this.sampleSenses(x, y);
 
     for (const bug of bugs) {
-      bug.setVision(this.vision, this.terrainSense, this.energySense);
+      bug.setSenses(this.vision, this.energySense);
       bug.marked = false;
       bug.update();
     }
   }
 
-  /** petri_dish.cpp:589-592, in both the intended and the shipped reading. */
+  /**
+   * petri_dish.cpp:589-592, reduced to the channels that still exist: the two
+   * getters that were crossed there are now one correctly-routed reading each.
+   *
+   * There was a third group here — nine slots fed a constant, kept because
+   * upstream's 29-slot layout was treated as the genome's contract. It is gone
+   * (DIVERGENCES.md §13) along with the switch that chose between the intended
+   * channels and the shipped ones: one sensory model, the intended one.
+   */
   private sampleSenses(x: number, y: number): void {
     this.getVisionAt(x, y);
-
-    if (this.params.senseModel === SenseModel.SIGHTED) {
-      this.terrainSense.fill(TERRAIN_SENSE);
-      this.getEnergyAt(x, y);
-      return;
-    }
-
-    // AS_SHIPPED, i.e. before fb3e2d4. Two independent slips combined:
-    //
-    //   - get_energy_at was passed the *terrain* output array, so the energy
-    //     channel was never written — and at -O3 (QtBugs.pro:12) the
-    //     uninitialised local read as zero, which is what this reproduces.
-    //   - both terrain and energy getters computed wrapped coordinates in nx,ny
-    //     and then indexed the grid with the unwrapped x*height+y, so each
-    //     channel held one value repeated nine times.
-    //
-    // Net effect: the "altitude" channel carried a flat reading of the cell's
-    // own energy, and the "energy" channel read as zero everywhere. The colour
-    // channel was never affected.
-    const flat = toByte((this.energy[x * this.height + y] / this.params.maxEEnergy) * 255);
-    this.terrainSense.fill(flat);
-    this.energySense.fill(0);
+    this.getEnergyAt(x, y);
   }
 
   /**

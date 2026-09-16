@@ -23,7 +23,7 @@
  */
 
 import { PetriDish } from '../src/sim/dish.js';
-import { DEFAULT_PARAMS, EnergyLayout, SenseModel } from '../src/sim/params.js';
+import { DEFAULT_PARAMS, EnergyLayout } from '../src/sim/params.js';
 import { Rng } from '../src/sim/rng.js';
 
 const steps = Number(process.argv[2] ?? 20000);
@@ -43,9 +43,6 @@ const configs: Config[] = [
   { label: 'layout      40k/76k random', overrides: { energyLayout: EnergyLayout.RANDOM } },
   { label: 'layout      40k/76k manydots', overrides: { energyLayout: EnergyLayout.MANYDOTS } },
   { label: 'layout      40k/76k ring', overrides: { energyLayout: EnergyLayout.RING } },
-  // The sense model is the port's one deliberate behavioural divergence, so the two
-  // worlds it can build are the two ecologies worth comparing directly.
-  { label: 'senses      as-shipped (blind)', overrides: { senseModel: SenseModel.AS_SHIPPED } },
   // Single knobs, to find what actually moves the reproduction/death ratio.
   { label: 'knob        move=1 stay=1', overrides: { moveEnergy: 1, stayEnergy: 1 } },
   { label: 'knob        child=40', overrides: { childEnergy: 40 } },

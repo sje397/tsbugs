@@ -18,7 +18,7 @@
  * the worst case for a GPU. A uniform per-cell grid pass would be the best case.
  */
 import { PetriDish } from '../src/sim/dish.js';
-import { DEFAULT_PARAMS, SenseModel } from '../src/sim/params.js';
+import { DEFAULT_PARAMS } from '../src/sim/params.js';
 import { Rng } from '../src/sim/rng.js';
 
 const SEEDS = [2024, 7, 99];
@@ -35,7 +35,7 @@ interface Row {
 }
 
 function run(seed: number, stepsPerUpdate: number): Omit<Row, 'sps' | 'seed'> {
-  const params = { ...DEFAULT_PARAMS, stepsPerUpdate, senseModel: SenseModel.SIGHTED };
+  const params = { ...DEFAULT_PARAMS, stepsPerUpdate };
   const dish = new PetriDish(params, new Rng(seed));
   for (let i = 0; i < WARM; i++) dish.step();
 

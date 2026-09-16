@@ -25,12 +25,11 @@ import {
   DEFAULT_PARAMS,
   EnergyLayout,
   MAX_BUG_COLOR,
-  SenseModel,
-  TERRAIN_SENSE,
   type WorldParams,
 } from '../src/sim/params.js';
 import { Rng } from '../src/sim/rng.js';
-import type { Bug } from '../src/sim/bug.js';
+import { Bug } from '../src/sim/bug.js';
+import { INPUTS } from '../src/sim/processor.js';
 
 const CELLS = DEFAULT_PARAMS.width * DEFAULT_PARAMS.height;
 
@@ -80,8 +79,8 @@ test('the wrap macros step around the edge; the offset macros step off it', () =
 });
 
 test('check_integrity finds no anomalies and no double counting', () => {
-  for (const senseModel of [SenseModel.SIGHTED, SenseModel.AS_SHIPPED]) {
-    const dish = run(400, { senseModel }, 4242);
+  {
+    const dish = run(400, {}, 4242);
     const report = dish.checkIntegrity();
 
     assert.ok(report.bugCount > 0, 'the fixture must contain bugs');
@@ -125,47 +124,58 @@ test('every energy layout runs and keeps the budget', () => {
   }
 });
 
-test('the shipped sense model blinds the energy channel and flattens altitude', () => {
-  const shipped = run(200, { senseModel: SenseModel.AS_SHIPPED }, 999);
-  const sighted = run(200, { senseModel: SenseModel.SIGHTED }, 999);
+// ------------------------------------------------------- the sensory layout
+//
+// DIVERGENCES.md §13. The VM has 20 inputs: colour 0-8, grid energy 9-17, and the
+// bug's own energy as a little-endian pair at 18-19. Upstream had 29, with a
+// nine-slot altitude group in the middle that this world has nothing to put in.
+// The numbers are pinned rather than left to be derived from constants, because a
+// slot index is the genome's interface: moving one silently changes what every
+// program means.
 
+test('a bug fills colour, energy and its own energy, at the pinned slots', () => {
+  assert.equal(INPUTS, 20, 'the input layout changed size');
+
+  const bug = Bug.createRandom(DEFAULT_PARAMS, new Rng(1));
+  bug.energy = 1234;
+  bug.update();
+
+  // The VM reads `in` and never writes it, so these survive the 64 steps update()
+  // runs. 1234 = 4 * 256 + 210.
+  assert.equal(bug.processor.readIn(18), 4, 'own energy, high byte');
+  assert.equal(bug.processor.readIn(19), 210, 'own energy, low byte');
+});
+
+test('the energy window carries a real 3x3 reading, not one value repeated', () => {
+  // This is the integration-level guard for §1: the shipped build passed the
+  // altitude array where the energy array belonged, so nine slots read as the
+  // same value (or as nothing at all). Any return of that shape fails here.
+  const dish = run(400, {}, 77);
+  const energy = new Set<number>();
+  const vision = new Set<number>();
   let bugs = 0;
-  let shippedEnergySlots = 0;
-  let shippedNonFlatAltitude = 0;
-  let sightedEnergySlots = 0;
-  let sightedNonUniformEnergy = 0;
+  let nonUniform = 0;
 
-  for (let hash = 0; hash < CELLS; hash++) {
-    for (const bug of shipped.bugsAt(hash)) {
-      bugs++;
-      for (let d = 0; d < 9; d++) {
-        // Slots 18..26 are the energy sense. Upstream passes the altitude array
-        // here instead, so they are never written.
-        if (bug.processor.readIn(18 + d) !== 0) shippedEnergySlots++;
-      }
-      // Slots 9..17 are the altitude sense, and they instead receive the flat
-      // energy value: nine copies of one reading, no gradient.
-      for (let d = 1; d < 9; d++) {
-        if (bug.processor.readIn(9 + d) !== bug.processor.readIn(9)) shippedNonFlatAltitude++;
-      }
+  dish.forEachBug((bug) => {
+    bugs++;
+    const first = bug.processor.readIn(9);
+    let varies = false;
+    for (let d = 0; d < 9; d++) {
+      const reading = bug.processor.readIn(9 + d);
+      energy.add(reading);
+      if (reading !== first) varies = true;
     }
+    if (varies) nonUniform++;
+    for (let d = 0; d < 9; d++) vision.add(bug.processor.readIn(d));
+  });
 
-    for (const bug of sighted.bugsAt(hash)) {
-      let nonZero = 0;
-      for (let d = 0; d < 9; d++) if (bug.processor.readIn(18 + d) !== 0) nonZero++;
-      sightedEnergySlots += nonZero;
-      if (nonZero > 0 && nonZero < 9) sightedNonUniformEnergy++;
-    }
-  }
-
-  assert.ok(bugs > 0, 'the fixture must contain bugs');
-  assert.equal(shippedEnergySlots, 0, 'the energy channel is never written as shipped');
-  assert.equal(shippedNonFlatAltitude, 0, 'the shipped altitude channel is one value nine times');
-
-  // The control: the same world and the same seed, sensed as the code intended,
-  // does carry energy — and carries it per neighbour rather than flat.
-  assert.ok(sightedEnergySlots > 0, 'the energy channel must be non-empty when wired correctly');
-  assert.ok(sightedNonUniformEnergy > 0, 'the energy window must have a real 3x3 gradient');
+  assert.ok(bugs > 50, `the fixture must contain bugs to sense (${bugs})`);
+  assert.ok(energy.size > 1, 'the energy channel must differ across the world');
+  assert.ok(nonUniform > 0, 'at least one bug must see a gradient rather than a flat window');
+  assert.ok(
+    vision.size > 1,
+    `control: the same probe sees the vision channel vary (${vision.size} distinct readings)`,
+  );
 });
 
 test('a sensory reading saturates at both ends instead of wrapping (upstream UB)', () => {
@@ -327,13 +337,12 @@ test("per-bug view modes read the cell's first bug", () => {
   );
 });
 
-// ------------------------------------------------------- view ramps / terrain sense
+// ------------------------------------------------------- view ramps
 //
-// Two things that outlived the terrain feature. The view ramps saturate rather than
-// wrapping — upstream's `unsigned char` return, fixed, and it applies to every view
-// mode rather than only the one that used to show ground (DIVERGENCES.md §9). And the
-// VM's terrain-sense group (slots 9-17) is still fed, in the SIGHTED model with a
-// constant, because the 27-slot input layout is the genome's contract (§12).
+// The one thing that outlived the terrain feature in the view code: the ramps
+// saturate rather than wrapping — upstream's `unsigned char` return, fixed, and it
+// applies to every view mode rather than only the one that used to show ground
+// (DIVERGENCES.md §9).
 
 test('the view ramps saturate at the ends of the ramp instead of wrapping', () => {
   // Upstream returned `unsigned char` from every view mode, so a value past the
@@ -353,34 +362,6 @@ test('the view ramps saturate at the ends of the ramp instead of wrapping', () =
     const c = clampByteRamp(v);
     assert.ok(c >= 1 && c <= MAX_BUG_COLOR, `clampByteRamp(${v}) = ${c}`);
   }
-});
-
-test('the terrain sense is constant — and the probe would have seen it if it were not', () => {
-  // The channel is kept: the 27-slot input layout is the genome's contract, so
-  // deleting nine slots would change what every program means rather than what
-  // the world contains. What matters is that it carries no terrain at all — one
-  // reading, everywhere, forever.
-  //
-  // The second assertion is the control that makes the first mean something. It
-  // reads a *different* window through the same code path and requires it to
-  // vary, so a constant here cannot be a probe that reads nothing.
-  const dish = run(400, { senseModel: SenseModel.SIGHTED }, 77);
-  const terrain = new Set<number>();
-  const vision = new Set<number>();
-  let bugs = 0;
-
-  dish.forEachBug((bug) => {
-    bugs++;
-    for (let d = 0; d < 9; d++) vision.add(bug.processor.readIn(d));
-    for (let d = 9; d < 18; d++) terrain.add(bug.processor.readIn(d));
-  });
-
-  assert.ok(bugs > 50, `the fixture must contain bugs to sense (${bugs})`);
-  assert.deepEqual([...terrain], [TERRAIN_SENSE], 'the terrain channel must carry no terrain');
-  assert.ok(
-    vision.size > 1,
-    `control: the same probe sees the vision channel vary (${vision.size} distinct readings)`,
-  );
 });
 
 test('a seed fixes the whole trajectory', () => {
