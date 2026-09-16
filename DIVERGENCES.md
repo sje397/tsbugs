@@ -534,3 +534,52 @@ against longest genomes of 7,818, 8,168 and 8,017 — the tail arithmetic holds 
 so an assertion on it distinguishes the two counts on a real world rather than on a
 hand-built array. Reverting `geneSpread` to count the tail as conservation fails that
 test and the two beside it, and passes nothing that should have caught it.
+
+## 16. Diverged: a click picks the nearest bug, and says how far away it was
+
+**Upstream.** `PetriWidget::mousePressEvent` (`petriwidget.cpp:84-88`) maps the click to a
+cell and emits it; `MainWindow::edit_bug(x, y)` then opens the bug editor on that cell's
+list — `bugList[hash].first()`, or the "no bug here" case if the cell holds none. There is
+no search: the cell *is* the answer, and which bug you get when several share a cell is
+whichever happens to be first in the list.
+
+**Why that fails on a web page, measured rather than asserted.** At the default 240×240
+world on a 720 px canvas a cell is **3.0 screen pixels** across, and the world is **0.13%
+occupied** (76 cells of 57,600). So the click target is a 3 px square and everything around
+it is empty: of the 608 adjacent-cell positions around the bugs in a tick-200 world, **8 hold
+a bug and 600 do not — a one-cell miss finds nothing 98.7% of the time.** A click that was
+aimed at a bug and landed one cell out is indistinguishable, to the person who clicked, from
+a click that was ignored.
+
+**The port.** `pickNearestBug` (`src/ui/pickBug.ts`): a click on a cell that holds a bug picks
+that cell, exactly as upstream does — the reach never overrides a direct hit, and repeated
+clicks on a multi-bug cell still walk its list. Only when the clicked cell is empty does the
+search run, over cells within `pickRadiusCells(15, dish.width)` — **5 cells at the default
+canvas size, derived from a 15-pixel reach rather than a cell count**, so the same physical
+gesture works at any zoom and at any world size. Distance is Euclidean, not axis-aligned
+(`Chebyshev` would reach diagonally 1.41× further), and ties go to the lower row then the
+lower column so the answer does not depend on map iteration order.
+
+**It says what it did, which is the part that is not upstream at all.** The inspector gains a
+`selected` row — `nearest within 5 cells — 1.4 cells from your click at 156, 145` — and keeps
+`cell` as the *bug's* cell, so the panel never looks like it answered a click it ignored. A
+click past the reach names the distance instead of selecting something unseen
+(`no bug within 5 cells of 0,0 — the nearest is 81.9 cells away`), and the canvas rings the
+watched bug and boxes the clicked cell, which is the only thing that shows the two differ.
+`nearestBugAnywhere` is that message's other half: bounded search for the decision, unbounded
+search for the explanation.
+
+**A defect this exposed in the page, worth recording because it is not about picking.** `draw()`
+runs only while the world is running, so with the simulation paused a click updated the panel
+and left the canvas alone — the ring would have been missing from exactly the state the panel
+described. The click path now repaints itself. Found by sampling ring pixels before and after a
+selection instead of reading the panel and assuming the picture agreed.
+
+Tested in `test/pickBug.test.ts` (11 cases), and falsified rather than asserted: replacing the
+distance comparison with *first candidate within the reach* fails three of them — `the nearest
+bug wins, not the first one in the map`, `distance is Euclidean, not the larger axis` and
+`equidistant bugs resolve the same way whichever order the map iterates in` — and passes the
+rest, so the reach, the direct hit and the empty-cell case are independent of it. The first
+version of the nearest-wins test had its decoy bug outside the reach, where it could never be
+the first candidate, and so passed the broken implementation: a test blind to its own
+hypothesis, caught by running it against the reverted code.

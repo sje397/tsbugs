@@ -30,6 +30,7 @@ import {
 } from '../dist/src/ui/paramPanel.js';
 import { geneSpread } from '../dist/src/sim/variance.js';
 import { barIndex, chartColumns, chartSummary, geneAtColumn } from '../dist/src/ui/varianceChart.js';
+import { nearestBugAnywhere, pickNearestBug, pickRadiusCells } from '../dist/src/ui/pickBug.js';
 import { DEFAULT_PARAMS, ENERGY_COLOR, POISON_COLOR, MAX_BUG_COLOR, BKG_COLOR } from '../dist/src/sim/params.js';
 import { Rng } from '../dist/src/sim/rng.js';
 import { fingerprint } from '../dist/src/sim/fingerprint.js';
@@ -105,6 +106,8 @@ function buildWorld() {
   watched = null;
   watchedDied = null;
   lastClick = { hash: -1, index: 0 };
+  clickedAt = null;
+  pickedNear = null;
   currentDish = null;
   showBugInfo('click a bug in the world');
 
@@ -121,6 +124,45 @@ function draw() {
   for (let i = 0; i < vc.length; i++) image32[i] = PALETTE[vc[i]];
   offCtx.putImageData(imageData, 0, 0);
   ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
+  drawInspectorMarker();
+}
+
+/**
+ * Ring the bug under inspection, and box the cell that was clicked when the two
+ * differ.
+ *
+ * A bug is 3 px across on screen, and the ring is redrawn every frame against the
+ * bug's current cell, so the panel's subject stays identifiable as it moves. On a
+ * nearest pick the box is the only thing that shows the difference between where
+ * the click landed and which bug answered it.
+ */
+function drawInspectorMarker() {
+  const px = canvas.width / dish.width;
+  ctx.lineWidth = 1;
+  ctx.lineJoin = 'miter';
+
+  if (pickedNear !== null && clickedAt !== null) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    ctx.strokeRect(clickedAt.x * px + 0.5, clickedAt.y * px + 0.5, px - 1, px - 1);
+  }
+
+  if (watched === null) return;
+  const hash = locateWatched();
+  if (hash === null) return;
+
+  const cx = (Math.trunc(hash / dish.height) + 0.5) * px;
+  const cy = ((hash % dish.height) + 0.5) * px;
+  const r = px * 1.6;
+  // Dark outline under a light ring, so one of the two reads against any cell the
+  // view modes can produce, black background included.
+  ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 0.5, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
 }
 
 function applyViewMode() {
@@ -307,6 +349,8 @@ let watched = null;      // the Bug under inspection, or null
 let watchedHash = undefined;
 let watchedDied = null;  // tick at which it was last seen alive, once it is gone
 let lastClick = { hash: -1, index: 0 };
+let clickedAt = null;    // cell the last click landed on, for the marker
+let pickedNear = null;   // how a non-direct selection was made, or null
 
 canvas.addEventListener('click', (event) => {
   const rect = canvas.getBoundingClientRect();
@@ -314,23 +358,51 @@ canvas.addEventListener('click', (event) => {
   const y = Math.min(dish.height - 1, Math.max(0, Math.floor(((event.clientY - rect.top) / rect.height) * dish.height)));
   const hash = x * dish.height + y;
 
-  const here = dish.bugsAt(hash);
-  if (here.length === 0) {
-    watched = null;
-    watchedHash = hash;
-    watchedDied = null;
-    showBugInfo(`no bug on ${x},${y} (tick ${dish.time})`);
-    return;
+  clickedAt = { x, y };
+
+  // A cell is 3 screen pixels across at the default canvas size, so a click aimed
+  // at a bug lands on a neighbouring cell about as often as on the bug's own — and
+  // the world is 0.13% occupied, so a miss is usually empty ground rather than bad
+  // aim. Take the nearest bug within a reach that follows the drawn cell size, and
+  // record how far it was; past that reach, say what was missed rather than
+  // selecting something the user never pointed at.
+  let target = hash;
+  let from = null;
+  let list = dish.bugsAt(hash);
+
+  if (list.length === 0) {
+    const radius = pickRadiusCells(rect.width, dish.width);
+    const pick = pickNearestBug(dish, x, y, radius);
+    if (pick === null) {
+      const near = nearestBugAnywhere(dish, x, y);
+      watched = null;
+      watchedHash = hash;
+      watchedDied = null;
+      pickedNear = null;
+      showBugInfo(near === null
+        ? `no bugs in the world (tick ${dish.time})`
+        : `no bug within ${radius} cells of ${x},${y} — the nearest is ${near.distance.toFixed(1)} cells away (tick ${dish.time})`);
+      draw();   // the ring of a previous selection has to go, and a paused world repaints on nothing else
+      return;
+    }
+    target = pick.hash;
+    from = { distance: pick.distance, radius, x, y };
+    list = dish.bugsAt(target);
   }
 
   // Repeated clicks on one cell walk its list, since a cell can hold several and
   // only the first one's colour is drawn.
-  const index = lastClick.hash === hash ? (lastClick.index + 1) % here.length : 0;
-  lastClick = { hash, index };
-  watched = here[index];
-  watchedHash = hash;
+  const index = lastClick.hash === target ? (lastClick.index + 1) % list.length : 0;
+  lastClick = { hash: target, index };
+  watched = list[index];
+  watchedHash = target;
   watchedDied = null;
+  pickedNear = from;
   refreshBug();
+  // Repaint now rather than waiting for the next frame: while the world is paused
+  // nothing else draws, so the marker would be missing from exactly the state the
+  // panel is describing.
+  draw();
 });
 
 /** Where the watched bug is now, or null once it is gone. */
@@ -375,8 +447,13 @@ function refreshBug() {
   host.textContent = '';
 
   const here = dish.bugsAt(hash).length;
+  // Where the click landed, when that was not this bug's cell: without it the
+  // panel looks like it answered a click it ignored.
+  const selection = pickedNear === null ? null
+    : `nearest within ${pickedNear.radius} cells — ${pickedNear.distance.toFixed(1)} cells from your click at ${pickedNear.x}, ${pickedNear.y}`;
   const facts = [
     ['cell', `${x}, ${y}${here > 1 ? ` (${here} bugs here — click again for the next)` : ''}`],
+    ...(selection === null ? [] : [['selected', selection]]),
     ['tick', String(dish.time)],
     ['generation', String(bug.generation)],
     ['age', String(bug.age)],
