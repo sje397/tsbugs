@@ -123,8 +123,10 @@ spread does, so on this evidence terrain does not change the population at all.
 
 The as-shipped senseless model is a different animal. Twelve runs at the same seeds
 and grounds (as-shipped), and exactly one of them leaves the attractor: seed 2 on
-flat ground goes 142 → 706 and stays there, ending at 584 with generation 623
-against the sighted model's 8 on the same seed and ground. It is deterministic —
+flat ground goes 142 at t=2,500 → 706 at t=5,000 and never returns — the sampled
+populations after that are 647 / 703 / 654 / 595 / 639 / 584 — ending at 584 with
+generation 623, against generation 8 for the sighted model on the same seed and
+ground. It is deterministic —
 re-running gives byte-identical rows except the probe's wall-clock rate column.
 
 That single run is where two claims in this file's history came from. A "620 bugs"
@@ -182,10 +184,20 @@ seeding, not the evolution.
 
 **Terrain under a bug is not drawn as terrain.** A cell containing a bug returns
 `ENERGY_COLOR` in the terrain view, exactly as upstream had it. This is faithful,
-and it means the terrain view cannot show the ground under the population.
-Measured at t=1,164 with a population of 105: **104 cells** render as energy blue —
-fewer cells than bugs, because a cell can hold more than one, so the blue count is a
-lower bound on the population and not an estimate of it.
+and it means the terrain view cannot show the ground under the population — which is
+measurable rather than merely true. At t=200 (seed 2024, roughness 20) the probe
+reports flat 8,053 / hollow 23,714 / raised 25,833 and the canvas 8,045 / 23,674 /
+25,796; the differences are 8, 40 and 37, summing to the **85 blue cells** the canvas
+paints, one per bug. That the two instruments differ by exactly the population — no
+residue, nothing unexplained — is a stronger statement than the t=0 agreement above,
+because it holds at a moment when the ground has changed.
+
+At t=1,164 from the same world the check gives **105 blue cells for a `population` of
+105**: equal, so no cell held two bugs at that instant. The count is a *lower bound*
+rather than an estimate — `bugList[hash]` is a list and any bug in it paints the cell
+— so a moment with overlap would read below the population. (An earlier revision of
+this file said 104 here. It was not reproducible: read back from the stated world and
+tick, the canvas and the array both say 105.)
 
 **No cell in the terrain view is black**, and that is a divergence rather than a
 compliment. Upstream's terrain branch returned the background for ground at exactly
