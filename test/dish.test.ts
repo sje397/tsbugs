@@ -396,7 +396,7 @@ test('elevation is a signed byte: a hole reaches the VM as a value above flat gr
   assert.equal(clampElevation(TERRAIN_FLAT), TERRAIN_FLAT);
 
   // The reachable path to that overflow is removeBug(): a dying bug's payload
-  // goes back onto the ground with no guard at all (petri_dish.cpp:474), and a
+  // goes back onto the ground with no guard at all (petri_dish.cpp:481), and a
   // bug can die anywhere. That is argued from the source rather than from a run,
   // because reaching an edge takes 126 deposits onto one cell.
   const byte = new Int8Array(1);

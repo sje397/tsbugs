@@ -30,13 +30,23 @@ original's actual behaviour, not as a supported mode.
 **Upstream, still present at `fb3e2d4`.** Both getters end in
 `(unsigned char)(array[...] / max * 255)` — a **float** converted straight to
 `unsigned char`. In C that conversion is undefined whenever the float leaves 0..255,
-and both edges are reachable in ordinary play:
+and one edge is reachable in ordinary play:
 
-- **Below zero** — bugs dig terrain negative (`terrain[hash] -= 1`, guarded only by
-  `> 0` / `> 1`). `fb3e2d4` is what first routes terrain — a signed quantity — into
-  this conversion; before it, the conversion read `energy`, which is never negative.
+- **Above the divisor's range** — the terrain channel divides by `MAX_TERRAIN` (10),
+  and the ground rises past it. `removeBug()` deposits a dying bug's payload with no
+  guard whatsoever (:481), and the drop branches of cases 3 and 4 add to a cell already
+  at its floor (:533, :543). Ground of 11 computes 280.5 and leaves 0..255: on the
+  shipped build that wraps to a *low* reading (11 reads 24/255), so a hill arrives at
+  the VM as a hollow. `fb3e2d4` is what first routes terrain into this conversion;
+  before it, the conversion read `energy`, which is never negative.
 - **Above 255** — energy deposits are additive with no cap
   (`energy[hash] += e`), so a cell's energy can exceed `max_e_energy` (80).
+
+*Not* below zero, which an earlier revision of this section asserted. Upstream's digs
+are floored — `> 0` in case 1, `> 1` in cases 2 and 4 — and `terrain` is an `int`, so
+nothing can write a negative into it at all. The `abs()` in case 0's drop guard reads as
+though the author expected signed elevation; the floors are what stop it ever existing.
+Section 8 covers that, and the port's deliberate departure from it.
 
 **The port.** `senseByte(value, max)` (dish.ts) clamps to 0..255 and keeps truncation
 toward zero, so every in-range reading is bit-identical to the original's. This is a
@@ -109,29 +119,78 @@ for the GPU work, not a preference.
   re-enables it — in the shipped app the DNA byte is reachable only by clicking the
   histogram). Revisiting this belongs with the UI controls.
 
-## 8. Fixed: terrain stores and renders a signed elevation
+## 8. Fixed: terrain renders monotonically — and diverged: it stores a signed byte
 
 **Upstream, still present at `fb3e2d4`.** Two defects that arrived together with
-`8c71d14`, both on the terrain path.
+`8c71d14`, both on the terrain path. The port fixes both, and then departs from upstream
+twice more, deliberately: it stores elevation in a signed byte, and it lets the ground be
+dug below flat. Both departures are recorded below rather than left implicit.
 
-*Storage.* `terrain[]` is declared `signed char`, and since `8c71d14` the widest writer
-is the `drop` action, which adds the bug's payload to the ground. The two `-= 1` digs are
-guarded (`:512-547`), but the deposit in `removeBug()` (`:474`) has no check at all, and
-a bug can die anywhere. Assigning past the end of a signed char is
-implementation-defined; on every compiler this has ever run on, +128 becomes −128 — **a
-peak turns into the deepest pit on the map**, and the climb cost at that cell inverts
-with it.
+*Storage — what is actually there.* `terrain` is `int *terrain` (petri_dish.h:98),
+initialised to 1 everywhere (:54) and serialised as an int (:112, :134). It is never
+generated: a world is saved and loaded, so the port's `seedTerrain()` has no upstream
+counterpart at all.
 
-*Rendering.* The terrain view computes `(int)(terrain/10.0f * 127 + 127)` — a formula
-written for elevations of 0..10, the range `MAX_TERRAIN` still names — against an array
-that has held signed bytes since `8c71d14`. Negative ground renders past the middle of
-the ramp and hills above +10 compute past its end and wrap mod 256 back to the **low**
-end, so relief renders inverted above ten levels and flat below zero.
+Nothing can write a negative into it. Both digs are floored — `> 0` in case 1, `> 1` in
+cases 2 and 4 — so the ground runs from 0 upward, and **holes do not exist in the
+original, even though it is written as though they might**: case 0's drop guard is
+`abs(terrain[hash]) < MAX_TERRAIN`, an absolute value applied to a quantity that can only
+be positive, and `MAX_TERRAIN` (10) names a ceiling.
+
+That ceiling is not enforced either, from above. Case 0 refuses to raise ground at or
+above 10, but `removeBug()` adds a dying bug's payload to its cell with no check at all
+(:481), and cases 3 and 4 add to a cell already at its floor (:533, :543). The payload is
+only ever 1 — set on a dig, cleared on a drop — so each of those deposits lifts one cell
+by one level. Slow, unbounded, and the way ground gets **above** the number the rest of
+the code treats as its maximum.
+
+*Rendering.* The terrain view (`:302`) is
+`terrain == 1 ? BkgColor : terrain == 0 ? 1 : (int)(terrain/10.0f * 127 + 127)` — flat
+ground renders black and the level below it near-black, in the one view built to show
+relief — and above ten levels the `unsigned char` return wraps mod 256 back to the **low**
+end, so a hill renders as a hollow.
+
+*Sensing.* `get_terrain_at` (`:330`) computes `(unsigned char)(terrain/10.0f * 255)`, which
+leaves 0..255 for any ground above 10: undefined behaviour in C and a wrap in practice, so
+an 11-high cell arrives as 24/255. `fb3e2d4` is what routes terrain into that conversion.
+
+*The port's channel is a different encoding, deliberately.* Upstream's byte is a scaled
+magnitude (`/MAX_TERRAIN * 255`), monotone over the 0..`MAX_TERRAIN` ground it could reach
+and wrapping above it. The port's is the two's-complement byte itself (`elevationByte`): a
+hole reads 129..255, flat ground 1, a hill 2..127 — injective over the whole ±127 range, so
+every depth the storage can hold arrives as a distinct byte, but it wraps at flat instead of
+saturating, so a hole arrives *above* every hill rather than below the ground. The
+alternative, `senseByte(elevation, TERRAIN_RAMP_SCALE)` as the energy channel uses, would
+have been monotone and would have held the channel in range by *saturating*: every hole at
+or below −1 computes ≤ 0 and clamps to 0, making a one-deep hole and a ten-deep one the same
+reading — blinding the bugs to depth in the one direction this section makes reachable.
+Two's complement keeps the depth and costs the program the ordering: it must take the sign
+bit (`AND` 128) or a difference, both of which the op set has. Upstream's input slots are
+`unsigned char` (processor.h:63) and its branches test only zero and non-zero, so this is a
+choice in a region upstream never reached, not a faithfulness question — no upstream program
+can depend on either encoding for a negative elevation. Tested in `elevation is a signed
+byte: a hole reaches the VM as a value above flat ground`, which pins 1 / 0 / 255 / 129 at
+flat, zero, −1 and −127.
+
 
 **The port.** One writer, one invariant: `setTerrain()` (`dish.ts`) is the only path into
 the array and it clamps through `clampElevation()`, so elevation cannot leave ±127
-whichever phase is writing — including the unguarded `removeBug()` deposit. The view keeps
-upstream's *scale* while dropping its wrap: `terrainColor(e)` is
+whichever phase is writing — including the unguarded `removeBug()` deposit.
+
+*Divergence, deliberate: the ground can be dug below flat.* Upstream's floors (`> 0`,
+`> 1`) are precisely what make holes impossible, and the port does not reproduce them:
+case 0's clearing dig runs to `TERRAIN_MIN` (`dish.ts`), and the drop branches fill any
+cell below flat rather than only cells at 0. That departs from upstream's **code** to
+follow its **intent** — `abs()` applied to a one-sided quantity, `MAX_TERRAIN` naming a
+range, the drop conditions written as "at the floor" — all of which describe a height
+field that has two directions. Reproducing the floors would faithfully reproduce the
+reason holes are unreachable, which is the defect rather than the design. Listed here as
+a divergence for that reason, not as a fix.
+
+It is also what makes the port's *negative* readings reachable at all: upstream's terrain
+channel has only the positive edge (§2), because upstream's ground only ever rises.
+
+The view keeps upstream's *scale* while dropping its wrap: `terrainColor(e)` is
 `(int)(e / TERRAIN_RAMP_SCALE * 127 + 127)`, saturated at the ends of the bug ramp instead
 of wrapped mod 256. Holes at the red end, flat ground just past mid-ramp, hills at the
 green end, monotonic in elevation so relief reads at a glance. The one thing this cannot
@@ -144,7 +203,8 @@ made sense while elevation ran 0..`MAX_TERRAIN` and flat was a special *value* r
 a level: it painted the world's ordinary ground black and the level below it near-black,
 in the one view built to show relief. A signed elevation has a neutral level, so the port
 maps the whole stored range onto the ramp and flat ground lands mid-ramp at 139 (8026 cells
-of 57600 in a default world — the flattest thing there is, rendered as what it is).
+of 57600 in a seed-2024 roughness-20 world before it is stepped, 8053 once 200 steps of
+digging and depositing have run — the flattest thing there is, rendered as what it is).
 Tested in `the terrain view is unreadable where a bug stands (upstream quirk)`, which pins
 139 for a flat cell, and `elevation renders monotonically across the ramp`, which pins the
 ends.
@@ -156,7 +216,8 @@ reasoning that ±127 is what the storage holds. That is 13x less contrast than t
 view, and it is not a theoretical loss: a seeded world's relief is about -11..+14, which
 lands in palette indices 116..141 of 252, so the view built to show terrain rendered a
 near-uniform yellow field. The defect being fixed was the *wrap*, never the scale:
-`MAX_TERRAIN` was serving two purposes and only the deposit-guard one was broken. On the
+`MAX_TERRAIN` was serving two purposes — a divisor in the sense and view formulas, and a
+nominal ceiling that held on one deposit path out of four. On the
 original's own numbers flat ground sits at 139 and terrain 10 at the top of the ramp; the
 port reproduces that, and states the saturation at both ends (terrain −10 computes 0 and
 is held at 1; terrain 10 computes 254 and is held at 252, the last two indices being

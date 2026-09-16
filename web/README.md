@@ -43,7 +43,6 @@ form of "self-contained" available. The git revision is embedded in the page
 (`window.__tsbugsBuild`, and the footer), so a copy on someone's disk traces back
 to a commit.
 
-
 ## Controls
 
 | Control | What it does |
@@ -98,26 +97,102 @@ for that reason. Rendering is not the constraint at 240x240; `PERFORMANCE.md`
 breaks the tick itself down (roughly 56% VM, 44% world) and asks what a GPU
 would and would not buy.
 
-**Caveats, because these are single runs.** One machine, one population point,
-one seed. Population is *chaotic* with respect to seed: three seeds at 20k ticks
-gave 88, 103 and 620 bugs on the same parameters, so any single-run comparison of
-two configurations is meaningless — which is also why an earlier reading of
-"rough terrain supports 7× fewer bugs" is not a claim this README makes. It was
-one seed. Averaged over three, flat 270 vs rough-20 235, i.e. nothing.
+## The ground, measured
 
-## Two things that look like bugs and are not
+What the world stores and what the canvas draws are the same object seen twice, so
+both are measured here — and checked against each other rather than assumed to
+agree.
 
-**The terrain view looks almost uniform.** It is: the rendered value is
-`clampByteRamp(elevation + 127)`, and `seedTerrain(20)` adds ±20 of noise and then
-runs two 3×3 smoothing passes, which leaves a range of about −10..+14 with 8,026
-of 57,600 cells exactly flat. Near-flat ground sits near elevation 0 → index 127 →
-mid-ramp yellow. Raise roughness to 40 for visible relief (4,021 flat cells), or
-start from roughness 0 and let the bugs dig: from a flat world, 20k ticks of bug
-activity produces a range of −4..+8 on their own.
+**Every number below comes from one instrument.** `tools/terrain-probe.mts` reads
+the simulation's own terrain array and prints a census at points through a run; it
+seeds terrain through its own stream (`Rng(seed + 1)`), so a measurement taken with
+a different stream is not comparable and numbers of that kind have been removed
+from this file. For the page, the second instrument is the canvas itself — every
+cell classified back through the palette — and where the two see the same world
+they agree exactly, which is the only reason to trust either.
+
+**Population is an attractor under the fixed senses, and a runaway without them.**
+At 20,000 ticks the sighted model settles near 100 whatever the seed and whatever
+the ground: final populations 102 / 97 / 102 / 100 / 101 / 100 for seeds 1–6 at
+roughness 0, and 107 / 99 / 106 / 105 / 103 / 97 at roughness 20 — every one of
+those twelve runs inside 97–107, with no sample in any of them above 114. That is
+the mechanism, not luck: `balance()` tops bug energy up toward `min_bug_energy`
+(40,000) and spawns at a mean of ~410 energy, and 40,000 / 410 is ~97 bugs. Flat
+ground (mean 100.3) and roughness-20 ground (102.8) differ by less than the seed
+spread does, so on this evidence terrain does not change the population at all.
+
+The as-shipped senseless model is a different animal. Twelve runs at the same seeds
+and grounds (as-shipped), and exactly one of them leaves the attractor: seed 2 on
+flat ground goes 142 → 706 and stays there, ending at 584 with generation 623
+against the sighted model's 8 on the same seed and ground. It is deterministic —
+re-running gives byte-identical rows except the probe's wall-clock rate column.
+
+That single run is where two claims in this file's history came from. A "620 bugs"
+figure sat in a list of seed results as though the seeds were comparable, and a
+reading of "rough terrain supports 7× fewer bugs" is what a flat/rough comparison
+looks like when one arm booms and the other does not. Both are sense-model
+artefacts rather than terrain effects — which is the argument for fixing the senses
+before benchmarking anything on this simulation, and against quoting a single run's
+population for any purpose.
+
+**The terrain view is not uniform — it spans the whole ramp.** Flat ground
+(elevation 1) renders at index 139, and at `TERRAIN_RAMP_SCALE = 10` — upstream's
+`terrain / MAX_TERRAIN * 127 + 127` — the ramp is steep: 12.7 indices per unit of
+elevation. The page's default world (seed 2024, roughness 20) is −10..+14, which
+reaches both ends of it.
+
+Read back from the canvas of a freshly seeded, stopped world — 240² = 57,600 cells,
+all classified, none unmatched, none black:
+
+* 21 distinct indices, spanning the full ramp from 1 to 252
+* mode 139 with **8,026 cells**, which is exactly the flat count
+* **23,728** cells below flat, **25,846** above (and 23,728 + 8,026 + 25,846 = 57,600)
+* **2** cells at the red end (index 1), **69** at the green (index 252)
+
+The probe on that same seed returns the same five quantities — flat 8,026, holes
+23,728, hills 25,846, satL 2, satH 69 — so the array and the rendered canvas are one
+world seen twice through two different instruments. The count of 21 is also what the
+ramp arithmetic predicts for a −10..+14 world: everything at or above +10 collapses
+onto 252 and everything at or below −10 onto 1, leaving the 19 elevations between
+them mapping one-to-one.
+
+An earlier revision of this port mapped one index per unit of elevation
+(`clampByteRamp(elevation + 127)`), which is what produces a near-uniform yellow
+field. It was dropped for upstream's scale; DIVERGENCES.md §8 has the reasoning.
+A reader looking at a uniform field is looking at something older than this page.
+
+**Raising the roughness past ~20 buys clipping, not relief.** Seeded ground on its
+own, before a single tick (seeds 1–3): roughness 20 gives −11..+11, −10..+12 and
+−9..+12, with 8,129 / 8,128 / 8,252 flat cells and only 0–4 and 24–61 cells sitting
+at the ramp's two ends. Roughness 40 gives −21..+23, −20..+20 and −21..+22, with
+4,195 / 4,131 / 4,104 flat, and 1,543–1,657 and 3,142–3,594 cells at the ends. So
+the extra roughness is largely spent piling ground against the ramp's extremes,
+where the terrain view cannot tell one cell from its neighbour.
+
+Seed-dependence cuts both ways and belongs in the same breath: 8,026 is the page's
+*default world* (seed 2024, roughness 20), not a constant — seeds 1–3 give 8,129 /
+8,128 / 8,252 at that roughness. Quote a flat count with its seed or not at all.
+
+**From a flat world the bugs dig their own relief**, and it does go below flat:
+20,000 ticks at roughness 0 (seed 1) leaves −3..+7 with 4,222 cells below flat and
+4,316 above, at a population of 102. The as-shipped sense model gives −4..+5 with
+3,336 and 3,381. Neither run saturates the ramp (satL and satH are 0 at every
+sample of both): the extremes that up end the ramp in seeded ground are the
+seeding, not the evolution.
 
 **Terrain under a bug is not drawn as terrain.** A cell containing a bug returns
 `ENERGY_COLOR` in the terrain view, exactly as upstream had it. This is faithful,
 and it means the terrain view cannot show the ground under the population.
+Measured at t=1,164 with a population of 105: **104 cells** render as energy blue —
+fewer cells than bugs, because a cell can hold more than one, so the blue count is a
+lower bound on the population and not an estimate of it.
+
+**No cell in the terrain view is black**, and that is a divergence rather than a
+compliment. Upstream's terrain branch returned the background for ground at exactly
+flat and palette index 1 for ground at zero, which painted the world's ordinary
+ground black in the one view built to show relief. The port's ramp is monotonic over
+the whole signed range, so flat ground lands at 139 and the background is never
+returned — `DIVERGENCES.md` §8 has the reasoning and the tests that pin it.
 
 ## Fidelity notes
 

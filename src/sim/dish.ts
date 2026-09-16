@@ -75,7 +75,7 @@ function toByte(value: number): number {
  * Upstream had no such bound: an int with flat at 1 and a nominal ceiling of
  * MAX_TERRAIN (10) that was already being violated from an unguarded direction —
  * removeBug() adds a dying bug's payload to the ground with no check at all
- * (petri_dish.cpp:474).
+ * (petri_dish.cpp:481).
  */
 export function clampElevation(elevation: number): number {
   return elevation < TERRAIN_MIN ? TERRAIN_MIN : elevation > TERRAIN_MAX ? TERRAIN_MAX : elevation;
@@ -83,9 +83,21 @@ export function clampElevation(elevation: number): number {
 
 /**
  * Elevation as the VM sees it: the two's-complement byte a `signed char` holds,
- * so a hole reads 129..255 and flat ground reads 1. The VM reads its input slots
- * as plain bytes, so a bug perceives the sign rather than a magnitude — it can
- * tell a hole from level ground, which is the whole point of a signed elevation.
+ * so a hole reads 129..255 and flat ground reads 1. Injective over the port's
+ * whole signed range — every elevation the port can store arrives as a distinct
+ * byte — and deliberately not monotone: it wraps at flat.
+ *
+ * That is the difference from upstream, whose channel was a magnitude on a
+ * one-sided scale (`elevation / MAX_TERRAIN * 255`), where ground above flat read
+ * higher and there was no sign to carry. Here a hole arrives *above* every hill,
+ * so ordering cannot be read off the raw value. It can still be recovered: the
+ * VM's branches test only zero and non-zero (processor.ts), but AND against 128
+ * tests the sign bit, and the difference of two bytes carries the signed
+ * difference mod 256. The alternative — the saturating 0..255 scale `senseByte`
+ * applies to the energy channel — would have collapsed every hole to 0, making a
+ * shallow one indistinguishable from a deep one. Two's complement loses no
+ * elevation; it costs a program the arithmetic to read it.
+ *
  * The renderer maps the same value the other way (terrainColor): a colour ramp
  * wants a monotonic scale, not a sign.
  */
@@ -133,15 +145,25 @@ export function terrainColor(elevation: number): number {
  *
  * Upstream writes `(unsigned char)(value / max * 255)` straight from a float,
  * which is **undefined behaviour in C** whenever that float leaves 0..255. Both
- * edges are reachable in normal play: bugs dig terrain below zero (so the
- * terrain channel sees negatives), and energy deposits are additive with no cap
- * (so a cell's energy can exceed max_e_energy).
+ * channels reach that edge in ordinary play, for different reasons:
+ *
+ *   - terrain, because the divisor `MAX_TERRAIN` is a nominal ceiling the ground
+ *     ignores from above: `removeBug()` deposits a dying bug's payload with no
+ *     guard, so a cell climbs past 10, one level per death, and ground of 11
+ *     computes 280.5 — wrapping, on the shipped build, to 24/255, i.e. low ground.
+ *   - energy, because deposits are additive with no cap, so a cell's energy can
+ *     exceed `max_e_energy` (80).
  *
  * Clamping is the intent the formula is reaching for — monotonic in `value`,
  * saturating at both ends. Truncation toward zero is kept, so every in-range
  * reading is identical to the original's. A wrap would not merely be arbitrary:
- * terrain of -1 would read as 231/255, i.e. near-maximum altitude, inverting
- * the signal the VM evolves against. See DIVERGENCES.md.
+ * ground of 11 would arrive as 24/255, a hill read as a hollow, inverting the
+ * signal the VM evolves against.
+ *
+ * The *negative* end is reachable only in the port, which lets bugs dig below
+ * flat (DIVERGENCES.md §8 — a deliberate divergence from upstream's floors);
+ * there a hole of -1 would wrap to 231/255, near-maximum altitude. The clamp
+ * covers both ends because the port needs both, not because upstream has both.
  */
 export function senseByte(value: number, max: number): number {
   const scaled = Math.trunc((value / max) * 255);
@@ -802,20 +824,17 @@ export class PetriDish {
    * One writer, one invariant: elevation cannot leave the signed byte's range
    * whichever phase is writing. That matters because the paths are not equally
    * careful — the drop action checks the ceiling first, but removeBug() adds a
-   * payload to the ground with no check at all (petri_dish.cpp:474), so without
-   * the clamp a bug dying on a peak would store 128 into an Int8Array and turn
-   * that peak into the deepest pit on the map.
+   * payload to the ground with no check at all (petri_dish.cpp:481). Upstream
+   * carried an unbounded int at that line; the port's byte would wrap, so the
+   * clamp is what holds the invariant: a bug dying on a peak would otherwise
+   * store 128 into an Int8Array and turn that peak into the deepest pit on the map.
    */
   private setTerrain(hash: number, elevation: number): void {
     this.terrain[hash] = clampElevation(elevation);
   }
 
   /**
-   * petri_dish.cpp:474.
-   *
-   * A dead bug's payload goes back onto the ground, and its energy simply
-  /**
-   * petri_dish.cpp:474.
+   * petri_dish.cpp:474-484, the deposit at :481.
    *
    * A dead bug's payload goes back onto the ground, and its energy simply
    * vanishes — it is subtracted from bugEnergy and from the cell total but is
