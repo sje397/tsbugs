@@ -14,6 +14,36 @@ served from the repository root, not from `web/`. That is the whole of the build
 step: `tsc` output is the artefact, `web/serve.mjs` is a 90-line static server
 with no dependencies. Nothing is bundled, rewritten or transpiled at serve time.
 
+The page imports the simulation from `../dist/src/sim/*.js`, so it has to be
+served from the repository root, not from `web/`. That is the whole of the build
+step: `tsc` output is the artefact, `web/serve.mjs` is a 90-line static server
+with no dependencies. Nothing is bundled, rewritten or transpiled at serve time.
+
+    npm run web:single     # tsc, then bundle everything into dist/tsbugs.html
+
+That second command builds the same page into **one file** — 56 kB, 9 modules
+inlined, no imports left — which opens by double-click from anywhere, with no
+server and no repository. It exists for the two things a served page is bad at: a
+copy you can send someone, and a page with nothing that can go stale (no cache,
+no relative path, no second copy of a module). esbuild follows the imports and
+concatenates; it does not transpile (`tsc` has already run) and does not minify,
+because this is a reference implementation and a file someone may want to read.
+
+Two things are checked rather than assumed in that build. The bundle must contain
+no surviving relative import — that check exists because the failure it catches is
+a page that works on the machine that built it and nowhere else. And the built
+file is opened from `file://` and held to the *same* fingerprint as Node
+(3030175021 at seed 2024, roughness 20, SIGHTED, 200 steps — `0xb49ccd2d`, the value
+`test/fingerprint.test.ts` pins), with the seven view modes swept for distinct
+canvases: 7 distinct, 15228 non-black canvas pixels in the Default view — that is
+1692 of 57600 world cells at the 3x scale, and it is worth stating the mechanism
+because the pixel count on its own reads as a measurement of the world — 0 page
+errors, and exactly one network request, the file itself, which is the strongest
+form of "self-contained" available. The git revision is embedded in the page
+(`window.__tsbugsBuild`, and the footer), so a copy on someone's disk traces back
+to a commit.
+
+
 ## Controls
 
 | Control | What it does |

@@ -10,11 +10,13 @@
     "typecheck": "tsc --noEmit",
     "test": "tsc && node --test 'dist/test/**/*.test.js'",
     "web": "tsc && node web/serve.mjs",
+    "web:single": "tsc && node web/build-single.mjs",
     "bench": "tsc && node dist/tools/bench.js",
     "vm-share": "tsc && node dist/tools/sweep-vm-share.js"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3"
   }
 }
