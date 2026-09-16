@@ -406,3 +406,50 @@ stay put. New components, pinned in `test/fingerprint.test.ts`: pop 77, time 200
 maxGen 3, births 49, deaths 74, bugEnergy 40030, energyEnergy 76067. Population at 200
 ticks falls slightly (81 → 77) — noise in a chaotic world, not a signal, and not a
 reason to prefer one layout over the other.
+
+---
+
+## 14. Carried over deliberately: `bugTotal` is never credited for the energy bugs eat
+
+§1-§3 and §9 fix upstream defects whose intent is clear. This is the inverse list, and
+the preamble's rule is what makes it worth keeping exhaustive: *a defect that is not
+listed here is one the port fixes.* So a reader who finds something that looks like a
+bug has exactly one place to check before changing it.
+
+**The defect.** `bugTotal[hash]` is upstream's cached per-cell total of the energy its
+bugs are holding. It is credited when a bug is injected (`petri_dish.cpp:436`),
+debited by `removeBug` (`:480`) and moved about by the move phase (`:761`, `:764`,
+`:773`). But it is also *read* as a gate at `:556` —
+
+```cpp
+if(energy[hash] > 0 && (total_bug_e = bugTotal[hash]) < world_params.max_energy * size) {
+```
+
+— and the energy handed out immediately below that line is never added back. The cache
+only ever falls behind the bugs it describes, and because the gate asks "is this cell
+short of energy?", falling behind moves it permanently towards *yes*.
+
+**It is not cosmetic, and the drift is not small.** Measured with
+`tools/death-cause-probe.mts`, seed 2024, 20,000 ticks:
+
+| config | Σ`bugTotal` over every cell | the bugs' real energy |
+|---|---|---|
+| default (`minEnergy` 20) | **-2,872,797** | 40,599 |
+| `minEnergy` 5 | **-17,931,772** | 90,362 |
+| `killOnEdge` false | **-2,658,954** | 40,467 |
+
+The cells are not slightly behind; the cache is large and negative, so the gate is true
+and stays true, and a cell feeds its bugs to `max_energy` whenever it has anything to
+feed them with. `bugTotal < maxEnergy * size` is not a constraint in any world that has
+been running for long. This is the port reproducing upstream's intent as far as the
+intent goes: the gate was meant to stop a cell over-feeding its bugs, and upstream's
+accounting is what makes the intent unreachable.
+
+**Why it stands.** Fixing it changes the selective environment, exactly like §13 did —
+the amount of energy a bug can accumulate is the thing being selected on. That is a
+model change, not a port repair, so it is Jason's-and-Scott's call and not a
+maintainer's, and it is not on the fix list. What the port does instead is make the
+drift visible: `bugTotalAt(hash)` reads the cache the gate reads, `checkIntegrity()`
+reports the counters beside the real sums for population and both energy pools (though
+not for `bugTotal` — nothing asserts this one, which is why it needed measuring), and
+the comment in `doEatingAndSeeing` says what is missing and where it came from.

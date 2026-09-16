@@ -469,7 +469,7 @@ export class PetriDish {
     // to it in balance() and subtracts in the move phase and removeBug. That is
     // a defect, and it is load-bearing for behaviour: bugTotal drifts, so the
     // `bugTotal < maxEnergy * size` gate above eventually stops constraining
-    // anything. See README, carried-over defects.
+    // anything. Carried over deliberately — see DIVERGENCES.md §14.
     this.bugEnergy += energyToBugs;
     this.energyEnergy -= energyToBugs + energySubmerged;
 
