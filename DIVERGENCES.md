@@ -137,6 +137,19 @@ of wrapped mod 256. Holes at the red end, flat ground just past mid-ramp, hills 
 green end, monotonic in elevation so relief reads at a glance. The one thing this cannot
 show is the ground under a bug, which is `ENERGY_COLOR` exactly as upstream had it.
 
+*Two smaller things the same branch drops, and they are quirks rather than regressions.*
+Upstream's terrain case returns `BKG_COLOR` for flat ground and palette index 1 for
+elevation 0 — `terrain[hash] == 1 ? BkgColor : (terrain[hash] == 0 ? 1 : …)`. Both only
+made sense while elevation ran 0..`MAX_TERRAIN` and flat was a special *value* rather than
+a level: it painted the world's ordinary ground black and the level below it near-black,
+in the one view built to show relief. A signed elevation has a neutral level, so the port
+maps the whole stored range onto the ramp and flat ground lands mid-ramp at 139 (8026 cells
+of 57600 in a default world — the flattest thing there is, rendered as what it is).
+Tested in `the terrain view is unreadable where a bug stands (upstream quirk)`, which pins
+139 for a flat cell, and `elevation renders monotonically across the ramp`, which pins the
+ends.
+
+
 *Why the scale is kept, having first been dropped.* The port initially mapped the type's
 full range — `clampByteRamp(e + 127)`, one palette index per unit of elevation — on the
 reasoning that ±127 is what the storage holds. That is 13x less contrast than the original
