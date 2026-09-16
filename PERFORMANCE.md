@@ -176,10 +176,12 @@ one (a 2400 x 2400 world would be ~140 ms per full pass in JS) and not before.
 
 ## A GPU port must not break the fingerprint
 
-`fingerprint()` (seed 2024, SIGHTED, 200 steps -> **2368350942**) is
+`fingerprint()` (seed 2024, 200 steps -> **2372629348**) is
 the acceptance test for any reimplementation, on any hardware. A GPU kernel that
 is faster and produces a different simulation has not been written yet; it has
-been substituted for one. The number moved once, deliberately, when terrain was
-removed (`DIVERGENCES.md` §12) — a change to the world that a faithful port must
-reproduce, not an instance of drift. Any *unintended* move is still a failure, and
-the test that distinguishes the two is whether a recorded divergence explains it.
+been substituted for one. The number has moved twice, both deliberately: when
+terrain was removed (`DIVERGENCES.md` §12), and when the altitude sense group was
+removed (`§13`) — changes to what the world holds and what a program reads, which a
+faithful port must reproduce rather than instances of drift. Any *unintended* move
+is still a failure, and the test that distinguishes the two is whether a recorded
+divergence explains it.

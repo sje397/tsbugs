@@ -360,7 +360,8 @@ switch: the group was removed on 2026-09-17 along with the shipped-sense model, 
 the layout is now 20 slots (§13).**
 
 **The fingerprint changed, and had to.** `3030175021` (`0xb49ccd2d`) →
-**`2368350942`** (`0x8d2a2ade`), seed 2024, SIGHTED, 200 steps. The fingerprint hashes
+**`2368350942`** (`0x8d2a2ade`), seed 2024, 200 steps — **superseded by §13**, which
+moved it to `2372629348` when the altitude group went. The fingerprint hashes
 every view index plus the counters, so removing a view mode and changing what a bug
 senses *must* move it — a changed fingerprint is a failure unless a recorded divergence
 explains it, and this section is that explanation. The components move with it and are

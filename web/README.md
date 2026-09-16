@@ -29,8 +29,8 @@ reference implementation and a file someone may want to read.
 Two things are checked rather than assumed in that build. The bundle must contain no
 surviving relative import — that check exists because the failure it catches is a
 page that works on the machine that built it and nowhere else. And the built file is
-opened and held to the *same* fingerprint as Node (**2368350942** at seed 2024,
-SIGHTED, 200 steps — `0x8d2a2ade`, the value `test/fingerprint.test.ts` pins), with
+opened and held to the *same* fingerprint as Node (**2372629348** at seed 2024,
+200 steps — `0x8d6b7364`, the value `test/fingerprint.test.ts` pins), with
 the six view modes swept for distinct canvases: 6 distinct, 15,228 non-black canvas
 pixels in the Default view. That pixel count is 1,692 of 57,600 world cells, and it is
 worth stating its composition because on its own it reads as a measurement of the
@@ -49,8 +49,7 @@ back to a commit.
 | **Ticks/frame** | How many simulation ticks to run per animation frame (1..200). |
 | **View mode** | Six: Default, Bugs only, Bug energy, Age, DNA size, DNA value. |
 | **RNG seed** | The simulation is fully deterministic given this. Change it, reset, and you get a different world. |
-| **Sense model** | `SIGHTED` (both channels wired as `fb3e2d4` intends) or `BLIND` (upstream's crossed-and-uninitialised channels, kept so the difference can be demonstrated rather than asserted). |
-| **Reset** | Rebuilds the world from the current seed and sense model. There is nothing else to configure — the ground is flat, and nothing in the simulation changes it. |
+| **Reset** | Rebuilds the world from the current seed. There is nothing else to configure here — the ground is flat, nothing in the simulation changes it, and there is one sensory model (DIVERGENCES.md §13). |
 | **Fingerprint** | A 32-bit hash of the whole rendered grid plus the simulation counters. Its purpose is the next section. |
 
 ## What is verified, and how
@@ -62,8 +61,8 @@ bug energy and energy energy. Same inputs, same hash, or the port is not faithfu
 
 | Check | Result |
 |---|---|
-| Fingerprint, seed 2024, SIGHTED, 200 steps | **2368350942** — identical in Node and Chromium |
-| …and its components | pop 81, time 200, maxGen 2, births 21, deaths 59, bugEnergy 40106, energyEnergy 76019 — all equal |
+| Fingerprint, seed 2024, 200 steps | **2372629348** — identical in Node and Chromium |
+| …and its components | pop 77, time 200, maxGen 3, births 49, deaths 74, bugEnergy 40030, energyEnergy 76067 — all equal |
 | All six view modes | render 6 distinct canvases (`allDistinct`), no page errors during the sweep |
 | Bug-cell count vs population, t=200, 300 and 2,000 | 80 cells / pop 81, 98 / 99, 97 / 97 — the render and the counter agree |
 
@@ -129,7 +128,12 @@ lands between 141 and 645. A level threshold is used at all because births canno
 attributed cleanly from outside — they are entangled with `balance()`'s own top-up —
 but the level a reproducing world reaches is not reachable any other way.
 
-**The as-shipped senseless model escapes the attractor entirely.** Twelve runs at the
+**The as-shipped senseless model escapes the attractor entirely.** *Historical: this
+measurement used the `AS_SHIPPED` sense model, which the port no longer has
+(DIVERGENCES.md §13). The numbers are as recorded and cannot be re-run here; they are
+kept because the claim below — that a single run's population is not a fact about the
+world — is still the reason the measurements in this file are shaped the way they are.*
+Twelve runs at the
 same seeds, and exactly one of them leaves: seed 2 on flat ground goes 142 at
 t=2,500 → 706 at t=5,000 and never returns — sampled populations after that are 647 /
 703 / 654 / 595 / 639 / 584 — ending at 584 with generation 623, against generation 8
@@ -186,6 +190,6 @@ blue (energy). The canvas is drawn nearest-neighbour to the widget size and the
 image is not smoothed, matching `Qt::FastTransformation`.
 
 Where this port deviates from upstream — including the fixed senses, the removed
-terrain (§12, which supersedes the terrain storage and ramp in §8), and the upstream
-bugs that were fixed rather than reproduced — `DIVERGENCES.md` §8, §9 and §12 are the
-record.
+terrain (§12, which supersedes the terrain storage and ramp in §8), the one sensory
+model and the closed-up input layout (§13), and the upstream bugs that were fixed
+rather than reproduced — `DIVERGENCES.md` §8, §9, §12 and §13 are the record.
