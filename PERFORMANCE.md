@@ -67,9 +67,9 @@ bookkeeping. Neither half is a wide uniform pass over the grid.
 | World | 240 x 240 = 57,600 cells |
 | Population | 90-123 in this configuration; `balance()` bounds it to ~100-250, hard ceiling 2000 |
 | Occupancy | ~99/57,600 = **0.17%** |
-| Tick | 0.160-0.175 ms (Node and browser overlap) |
+| Tick | 0.140 ms (Node) to 0.175 ms (browser); 0.140-0.175 ms overall |
 | Per bug per tick | 1.4-1.6 us |
-| Full-grid pass | 1.39-1.52 ms — **~9 ticks** — at 24-26 ns/cell |
+| Full-grid pass | 1.36-1.52 ms — **~9 ticks** — at 24-26 ns/cell |
 | Per bug memory | DNA 4,096-8,192 B **x2** (the `Dna` holds one copy; `Processor` takes another via `rom.slice()`, a deliberate divergence from the original's shared `ram = rom`) + 64 B stack = **8-16 KB** |
 | Per world memory | grid arrays ~675 KB (Int32 energy, Int32 bugTotal, Int8 terrain, 3 x Uint8) + bugs ~0.8-1.6 MB = **~1.5-2.3 MB** |
 
@@ -79,14 +79,31 @@ the grid is only paid for in full when something forces a full pass (a view-mode
 change, or a renderer that recomputes every cell instead of updating the cells
 that changed).
 
+
+Two costs are easy to conflate here, and conflating them is how a doc goes wrong:
+the **full-grid pass** is `updateAllPixels()`, which recomputes every cell's view
+byte (Node, `npm run bench`), and the **draw** is the page's `draw()` — palette
+expansion, `putImageData`, then the scaled `drawImage`. They are different work in
+different processes: ~1.4 ms against ~0.24 ms. Only the second happens per frame.
+
+The Node and browser samples no longer overlap: this run reads 7,164 ticks/s in
+Node against 5,709-5,907/s in the browser, so Node is ~20% faster on the same box.
+The earlier "overlap" reading came from samples taken on an earlier build; one run
+each is not enough to say whether the gap is the build or the environment, so it
+is recorded rather than explained.
+
 ## Verdict
 
 ### The page: yes, already done, and there is no performance pressure to relieve
 
-At the default 4 ticks/frame the simulation costs ~0.67 ms of a 16.7 ms frame,
-and the same frame's budget would hold ~100 ticks. The blit is below reliable
-measurement (0.042 and 0.203 ms across two runs — compositor scheduling, not
-work). The page is ~30x inside its frame budget at the settings it ships with.
+At the default 4 ticks/frame the simulation costs ~0.69 ms of a 16.7 ms frame
+(4 x 0.172 ms/tick; the same budget would hold ~97 ticks). The blit costs
+0.244 ms — 0.242, 0.245, 0.246 over three runs, so about 1.4 ticks, and a tick
+plus a draw is 0.93 ms of the frame. An earlier two-sample reading of 0.042 and
+0.203 ms is superseded: the spread there was scheduling, but the cost is real
+work and is reproducible on the single-file build — and "we could not measure it"
+is a different claim from "it costs a quarter of a millisecond". The page is ~18x
+inside its frame budget at the settings it ships with.
 
 Nothing about this needs a GPU. WebGPU on the page is worth considering only as a
 *scaling* decision — larger worlds, or many full-field views per frame — not as a
