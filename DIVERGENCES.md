@@ -130,12 +130,24 @@ end, so relief renders inverted above ten levels and flat below zero.
 
 **The port.** One writer, one invariant: `setTerrain()` (`dish.ts`) is the only path into
 the array and it clamps through `clampElevation()`, so elevation cannot leave ±127
-whichever phase is writing — including the unguarded `removeBug()` deposit. The view maps
-the whole signed range onto the palette rather than assuming a ten-level scale:
-`terrainColor(e) = clampByteRamp(e + 127)` — holes at the red end, flat ground just past
-mid-ramp, hills at the green end, monotonic in elevation so relief reads at a glance. The
-one thing this cannot show is the ground under a bug, which is `ENERGY_COLOR` exactly as
-upstream had it.
+whichever phase is writing — including the unguarded `removeBug()` deposit. The view keeps
+upstream's *scale* while dropping its wrap: `terrainColor(e)` is
+`(int)(e / TERRAIN_RAMP_SCALE * 127 + 127)`, saturated at the ends of the bug ramp instead
+of wrapped mod 256. Holes at the red end, flat ground just past mid-ramp, hills at the
+green end, monotonic in elevation so relief reads at a glance. The one thing this cannot
+show is the ground under a bug, which is `ENERGY_COLOR` exactly as upstream had it.
+
+*Why the scale is kept, having first been dropped.* The port initially mapped the type's
+full range — `clampByteRamp(e + 127)`, one palette index per unit of elevation — on the
+reasoning that ±127 is what the storage holds. That is 13x less contrast than the original
+view, and it is not a theoretical loss: a seeded world's relief is about -11..+14, which
+lands in palette indices 116..141 of 252, so the view built to show terrain rendered a
+near-uniform yellow field. The defect being fixed was the *wrap*, never the scale:
+`MAX_TERRAIN` was serving two purposes and only the deposit-guard one was broken. On the
+original's own numbers flat ground sits at 139 and terrain 10 at the top of the ramp; the
+port reproduces that, and states the saturation at both ends (terrain −10 computes 0 and
+is held at 1; terrain 10 computes 254 and is held at 252, the last two indices being
+reserved) rather than wrapping past them.
 
 The seeding that gives the world its relief is part of the same feature: `seedTerrain()`
 lays down a random field and blurs it (two 3x3 passes). A per-cell random field is not
@@ -146,7 +158,10 @@ because a world is saved and loaded rather than generated.
 Tested in `elevation stays inside the signed byte under both sensory models` (seeding
 roughness 200 with the blur off drives thousands of cells past both ends, which must
 saturate rather than wrap — a wrapped store reports −128), `seeded ground is rolling, not
-spiky` and `the terrain view maps elevation monotonically, holes at the red end`.
+spiky` and `the terrain view maps elevation monotonically, holes at the red end` (which
+also asserts the *legibility* property — one level of elevation moves the colour at least
+twelve indices — the assertion that fails by a factor of twelve if the scale is dropped
+again).
 
 ## 9. Fixed: view ramps saturate instead of wrapping
 

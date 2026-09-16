@@ -132,6 +132,24 @@ export const TERRAIN_MIN = -127;
 export const TERRAIN_MAX = 127;
 export const TERRAIN_FLAT = 1;
 
+/**
+ * How much elevation one traverse of the render ramp covers — and the number
+ * upstream's terrain view divided by (MAX_TERRAIN = 10, petri_dish.cpp:13).
+ *
+ * Upstream used that one number for two jobs, and only one of them survives
+ * contact with a signed type: as a *deposit guard* it was never true (see above),
+ * but as the *scale of the terrain view* it is exactly right, because it names
+ * how much relief the authors expected a world to have and therefore how much
+ * relief the ramp should resolve.
+ *
+ * The port initially dropped it and mapped the type's full ±127 instead, which
+ * gives one palette index per unit of elevation. That is ~13x less contrast than
+ * upstream's own view, and it is why seeded ground rendered as a near-uniform
+ * yellow field: a roughness-20 world's relief of -11..+14 lands inside palette
+ * indices 116..141 of 252. See DIVERGENCES.md §8.
+ */
+export const TERRAIN_RAMP_SCALE = 10;
+
 /** petri_dish.cpp:158-161 — the reserved view-colour values. */
 export const ENERGY_COLOR = 255;
 export const POISON_COLOR = 254;

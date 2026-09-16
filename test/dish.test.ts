@@ -33,6 +33,7 @@ import {
   TERRAIN_FLAT,
   TERRAIN_MAX,
   TERRAIN_MIN,
+  TERRAIN_RAMP_SCALE,
   type WorldParams,
 } from '../src/sim/params.js';
 import { Rng } from '../src/sim/rng.js';
@@ -354,9 +355,10 @@ test('the terrain view is unreadable where a bug stands (upstream quirk)', () =>
       flat++;
       // Upstream rendered flat ground as BKG_COLOR (black), because flat was a
       // special value rather than a level. It is a level now, so it takes its
-      // place mid-ramp — and the absolute number here is what can tell the two
-      // behaviours apart.
-      assert.equal(dish.viewCol[hash], 128, `flat ground at ${hash} should sit mid-ramp`);
+      // place just past mid-ramp (139: the ramp is scaled to TERRAIN_RAMP_SCALE,
+      // and flat is one level above sea level) — and the absolute number here is
+      // what can tell the two behaviours apart.
+      assert.equal(dish.viewCol[hash], 139, `flat ground at ${hash} should sit just past mid-ramp`);
     }
   }
 
@@ -451,20 +453,42 @@ test('the terrain view maps elevation monotonically, holes at the red end', () =
     previous = c;
   }
 
-  // Every index on the ramp is used, and used once — stated backwards from the
-  // ramp, because that is the direction with no off-by-one in its bounds. It is
-  // also the readability property: two cells that differ in elevation differ in
-  // colour. Upstream's formula (elevation / MAX_TERRAIN * 127 + 127) was only
-  // monotonic while elevation stayed under 10, and its modulo brought anything
-  // above that back round to the bottom of the ramp.
-  for (let c = 1; c <= MAX_BUG_COLOR; c++) {
-    assert.equal(terrainColor(clampElevation(c - 127)), c, `ramp index ${c} is unused`);
+  // The readability property, and the one that was actually broken: a single
+  // level of elevation must move the colour a *visible* distance. Mapping the
+  // signed byte's full range gave one palette index per level, so a seeded
+  // world's relief of -11..+14 occupied palette 116..141 — a flat-looking yellow
+  // field in the one view whose job is to show relief. Revert the scale to
+  // `elevation + 127` and every step here drops to 1, so this fails.
+  // Both ends of the ramp saturate one level early (terrain -10 computes 0 and
+  // is held at 1; terrain 10 computes 254 and is held at 252), so the steps that
+  // count are the ones fully inside the range, -9..8.
+  for (let e = -(TERRAIN_RAMP_SCALE - 1); e <= TERRAIN_RAMP_SCALE - 2; e++) {
+    const step = terrainColor(e + 1) - terrainColor(e);
+    assert.ok(
+      step >= 12,
+      `one level of elevation must be visible: terrainColor(${e + 1}) - terrainColor(${e}) = ${step}`,
+    );
   }
+  // The last step up is shorter, and only because the top of the ramp is a
+  // saturation rather than a wrap: the formula reaches 254 at terrain 10 and
+  // MAX_BUG_COLOR is 252 (253/254/255 being cyan, poison and energy). Stated
+  // rather than absorbed into a looser bound.
+  assert.equal(
+    terrainColor(TERRAIN_RAMP_SCALE) - terrainColor(TERRAIN_RAMP_SCALE - 1),
+    11,
+    'the final step is short by exactly the two reserved indices at the top',
+  );
 
-  assert.equal(terrainColor(TERRAIN_MIN), 1, 'rock bottom is the red end');
-  assert.equal(terrainColor(TERRAIN_FLAT), 128, 'flat ground sits mid-ramp');
-  assert.equal(terrainColor(126), MAX_BUG_COLOR, 'ground above the ramp top saturates');
-  assert.equal(terrainColor(TERRAIN_MAX), MAX_BUG_COLOR, 'the ceiling is the green end');
+  // The ramp is scaled to the relief it is meant to resolve, and saturates
+  // outside it. upstream: terrain 0 landed at 127 and 10 at 254, so flat ground
+  // (1) sits just past mid-ramp and the extremes are the ramp's ends.
+  assert.equal(terrainColor(0), 127, 'sea level is the middle of the ramp');
+  assert.equal(terrainColor(TERRAIN_FLAT), 139, 'flat ground sits just past mid-ramp');
+  assert.equal(terrainColor(-TERRAIN_RAMP_SCALE), 1, 'rock bottom is the red end');
+  assert.equal(terrainColor(TERRAIN_RAMP_SCALE), MAX_BUG_COLOR, 'the ramp top is the green end');
+
+  assert.equal(terrainColor(TERRAIN_MIN), 1, 'the type floor saturates at the red end');
+  assert.equal(terrainColor(TERRAIN_MAX), MAX_BUG_COLOR, 'the type ceiling saturates at the green end');
 });
 
 test('seeded terrain gives the world relief, and the population does not flatten it', () => {

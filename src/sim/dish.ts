@@ -39,6 +39,7 @@ import {
   TERRAIN_FLAT,
   TERRAIN_MAX,
   TERRAIN_MIN,
+  TERRAIN_RAMP_SCALE,
   SenseModel,
   type WorldParams,
 } from './params.js';
@@ -107,13 +108,24 @@ export function clampByteRamp(value: number): number {
 }
 
 /**
- * Elevation as a palette index: the signed byte shifted onto the bug ramp, so
- * TERRAIN_MIN lands at the red end, flat ground sits just past mid-ramp, and
- * TERRAIN_MAX reaches the green end. Monotonic in elevation, which is what a
- * terrain view has to be to be readable at a glance.
+ * Elevation as a palette index, at the scale upstream's terrain view used:
+ * `(int)(terrain / MAX_TERRAIN * 127 + 127)`, with the wrap replaced by
+ * saturation.
+ *
+ * The scale is the whole point. One palette index per unit of elevation — which
+ * is what mapping the signed byte's full ±127 range amounts to — compresses a
+ * real world's relief (roughly ±10 around flat) into a single hue, so the view
+ * that exists to make terrain legible shows what looks like flat ground. At
+ * TERRAIN_RAMP_SCALE the same relief traverses the ramp (12.7 indices per unit),
+ * which is the contrast the original formula was written to give.
+ *
+ * Monotonic in elevation, holes at the red end and hills at the green, with
+ * everything past ±TERRAIN_RAMP_SCALE saturating as it does upstream — except
+ * that upstream's `unsigned char` return wraps there instead, which is the defect
+ * being fixed, not a behaviour being kept.
  */
 export function terrainColor(elevation: number): number {
-  return clampByteRamp(elevation + 127);
+  return clampByteRamp(Math.trunc((elevation / TERRAIN_RAMP_SCALE) * 127 + 127));
 }
 
 /**
