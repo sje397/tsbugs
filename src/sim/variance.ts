@@ -24,6 +24,12 @@
  * One divergence: at population 0 upstream computes 0/0, which is NaN in floating
  * point and then `(int)(NaN * 255)` — undefined behaviour in C++, and no meaning
  * worth reproducing. An empty population reads 0 across the board here.
+ *
+ * Because of the sentinel, zero spread has two meanings and the two are reported
+ * separately: `fixedWithinGenome` (a gene the population holds and agrees on) and
+ * `fixedPositions` (every position reading 0, tail included). A world whose genomes
+ * are all shorter than `maxData` makes them differ, and only the first answers
+ * "has selection pinned anything?".
  */
 
 /** How many samples the histogram has to be computed over, and how uneven they are. */
@@ -32,8 +38,22 @@ export interface GeneSpread {
   readonly population: number;
   /** One entry per gene position in 0..maxData-1, each in 0..1. */
   readonly spread: Float64Array;
-  /** Positions at 0 spread: the whole population agrees there. */
+  /**
+   * The longest genome sampled, or 0 when the population is empty. Positions from
+   * here on are past the end of *every* bug's DNA, so they read 0 spread without
+   * anything having been conserved there — the sentinel, not selection.
+   */
+  readonly longestGenome: number;
+  /** Positions at 0 spread, including any past the end of every genome (above). */
   readonly fixedPositions: number;
+  /**
+   * Positions at 0 spread that are *within* the genome the population has — the
+   * only ones that say selection pinned a gene. For a world whose genomes are all
+   * shorter than `maxData`, this is the number a reader wants and `fixedPositions`
+   * is not: at seed 2024 / 200 ticks every one of the 128 zeros sits at 8064..8191,
+   * one past the longest genome (8064), so no gene here is fixed by selection.
+   */
+  readonly fixedWithinGenome: number;
   /** The position with the most disagreement, and its spread (0 when empty). */
   readonly widestPosition: number;
   readonly widestSpread: number;
@@ -54,7 +74,11 @@ export function geneSpread(genomes: readonly Uint8Array[], maxData: number): Gen
   const spread = new Float64Array(maxData);
   const buckets = new Int32Array(BUCKET_COUNT);
 
+  let longestGenome = 0;
+  for (const genome of genomes) if (genome.length > longestGenome) longestGenome = genome.length;
+
   let fixedPositions = 0;
+  let fixedWithinGenome = 0;
   let widestPosition = 0;
   let widestSpread = 0;
 
@@ -72,12 +96,20 @@ export function geneSpread(genomes: readonly Uint8Array[], maxData: number): Gen
 
     const value = population === 0 ? 0 : (population - buckets[modal]) / population;
     spread[gene] = value;
-    if (value === 0) fixedPositions++;
+    if (value === 0) {
+      fixedPositions++;
+      // Counted directly rather than derived as `fixedPositions - (maxData -
+      // longestGenome)`: that identity holds (a position past every genome is all
+      // sentinel and so always reads 0), but relying on it would make this number
+      // silently wrong if the sentinel rule ever changed. Only positions a bug
+      // could actually hold can show selection.
+      if (gene < longestGenome) fixedWithinGenome++;
+    }
     if (value > widestSpread) {
       widestSpread = value;
       widestPosition = gene;
     }
   }
 
-  return { population, spread, fixedPositions, widestPosition, widestSpread };
+  return { population, spread, longestGenome, fixedPositions, fixedWithinGenome, widestPosition, widestSpread };
 }

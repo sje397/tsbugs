@@ -30,7 +30,32 @@ test('a population that agrees everywhere has zero spread', () => {
   assert.equal(result.population, 3);
   assert.deepEqual([...result.spread], [0, 0, 0, 0]);
   assert.equal(result.fixedPositions, 4);
+  assert.equal(result.fixedWithinGenome, 4, 'every position is inside a 4-byte genome');
+  assert.equal(result.longestGenome, 4);
   assert.equal(result.widestSpread, 0);
+});
+
+test('positions past the longest genome are not counted as conservation', () => {
+  // Two bugs, one 4 bytes and one 6, measured over 8 positions. They agree on 0..3
+  // (all fixed), disagree at 4 and 5 (one has a byte, the other the sentinel), and
+  // positions 6 and 7 are past the end of both -- so they read 0 spread without
+  // anything having been conserved. Only 0..3 are genes the population actually has.
+  const result = geneSpread([bytes(1, 2, 3, 4), bytes(1, 2, 3, 4, 5, 6)], 8);
+
+  assert.deepEqual([...result.spread], [0, 0, 0, 0, 0.5, 0.5, 0, 0]);
+  assert.equal(result.longestGenome, 6);
+  assert.equal(result.fixedPositions, 6, 'six positions read 0 spread, tail included');
+  assert.equal(result.fixedWithinGenome, 4, 'only the four genes both bugs hold are conserved');
+  assert.equal(result.widestPosition, 4, 'the sentinel boundary is where disagreement starts');
+});
+
+test('an empty population has no genome to be fixed within', () => {
+  const result = geneSpread([], 4);
+
+  assert.equal(result.population, 0);
+  assert.equal(result.longestGenome, 0);
+  assert.equal(result.fixedPositions, 4, 'every position still reads 0, as upstream ends up doing');
+  assert.equal(result.fixedWithinGenome, 0);
 });
 
 test('one diverging bug moves exactly its own gene', () => {
@@ -110,5 +135,36 @@ test('agrees with a direct tally of the modal byte, over real DNA', () => {
       (genomes.length - modal) / genomes.length,
       `gene ${gene} (${tally.size} distinct bytes held)`,
     );
+  }
+});
+
+test('the two counts differ by exactly the positions no genome reaches', () => {
+  // The shape the readout got wrong. `fixedPositions` counts every position at
+  // zero spread, and the sentinel above means that includes the tail past the
+  // longest genome; `fixedWithinGenome` excludes it. So their difference is not
+  // free -- it is exactly maxData minus the longest genome, and asserting that
+  // catches the tail being counted as conservation on a real world rather than
+  // on a hand-built array, which is where the defect shipped from.
+  //
+  // Measured on real runs, 20k ticks, seed 19 at three mutation rates:
+  //   378 - 4 = 374 = 8192 - 7818;  24 - 0 = 24 = 8192 - 8168;
+  //   175 - 0 = 175 = 8192 - 8017.
+  for (const ticks of [300, 800]) {
+    const dish = new PetriDish({ ...DEFAULT_PARAMS }, new Rng(2024));
+    for (let i = 0; i < ticks; i++) dish.step();
+
+    const genomes: Uint8Array[] = [];
+    dish.forEachBug((bug) => genomes.push(bug.dna.data));
+    const result = geneSpread(genomes, DEFAULT_PARAMS.maxData);
+
+    assert.ok(result.longestGenome < DEFAULT_PARAMS.maxData,
+      `tick ${ticks}: the fixture needs a genome shorter than maxData, or the tail is empty`);
+    assert.equal(
+      result.fixedPositions - result.fixedWithinGenome,
+      DEFAULT_PARAMS.maxData - result.longestGenome,
+      `tick ${ticks}: fixedPositions must exceed fixedWithinGenome by exactly the unreached tail`,
+    );
+    assert.ok(result.fixedWithinGenome <= result.fixedPositions,
+      'and the honest count can never exceed the inclusive one');
   }
 });
