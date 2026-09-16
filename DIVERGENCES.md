@@ -109,25 +109,62 @@ for the GPU work, not a preference.
   re-enables it — in the shipped app the DNA byte is reachable only by clicking the
   histogram). Revisiting this belongs with the UI controls.
 
-## 8. Not yet ported
+## 8. Fixed: terrain stores and renders a signed elevation
 
-World serialisation: upstream saves and loads worlds through `QDataStream`
-(save/save-as/autosave). The port has no persistence. Note that upstream itself does
-**not** serialise `viewMode`, so a loaded world always renders in Default.
+**Upstream, still present at `fb3e2d4`.** Two defects that arrived together with
+`8c71d14`, both on the terrain path.
 
----
+*Storage.* `terrain[]` is declared `signed char`, and since `8c71d14` the widest writer
+is the `drop` action, which adds the bug's payload to the ground. The two `-= 1` digs are
+guarded (`:512-547`), but the deposit in `removeBug()` (`:474`) has no check at all, and
+a bug can die anywhere. Assigning past the end of a signed char is
+implementation-defined; on every compiler this has ever run on, +128 becomes −128 — **a
+peak turns into the deepest pit on the map**, and the climb cost at that cell inverts
+with it.
 
-## Open, deliberately not decided
+*Rendering.* The terrain view computes `(int)(terrain/10.0f * 127 + 127)` — a formula
+written for elevations of 0..10, the range `MAX_TERRAIN` still names — against an array
+that has held signed bytes since `8c71d14`. Negative ground renders past the middle of
+the ramp and hills above +10 compute past its end and wrap mod 256 back to the **low**
+end, so relief renders inverted above ten levels and flat below zero.
 
-**View-colour values that leave the bug ramp.** The three scalar view formulas compute
+**The port.** One writer, one invariant: `setTerrain()` (`dish.ts`) is the only path into
+the array and it clamps through `clampElevation()`, so elevation cannot leave ±127
+whichever phase is writing — including the unguarded `removeBug()` deposit. The view maps
+the whole signed range onto the palette rather than assuming a ten-level scale:
+`terrainColor(e) = clampByteRamp(e + 127)` — holes at the red end, flat ground just past
+mid-ramp, hills at the green end, monotonic in elevation so relief reads at a glance. The
+one thing this cannot show is the ground under a bug, which is `ENERGY_COLOR` exactly as
+upstream had it.
+
+The seeding that gives the world its relief is part of the same feature: `seedTerrain()`
+lays down a random field and blurs it (two 3x3 passes). A per-cell random field is not
+terrain — every step's climb cost would be an independent draw — so the blur is what
+makes the gradient real. It is not upstream behaviour; upstream has no seeding at all,
+because a world is saved and loaded rather than generated.
+
+Tested in `elevation stays inside the signed byte under both sensory models` (seeding
+roughness 200 with the blur off drives thousands of cells past both ends, which must
+saturate rather than wrap — a wrapped store reports −128), `seeded ground is rolling, not
+spiky` and `the terrain view maps elevation monotonically, holes at the red end`.
+
+## 9. Fixed: view ramps saturate instead of wrapping
+
+**Upstream.** The three scalar view formulas compute
 `(int)((252 - 1) * (value - min) / (max - min)) + 1`, and their `unsigned char` return
 wraps mod 256 when `value` falls outside `[min, max]` — reachable for energy above
 `max_energy`, age beyond `max_age`, and DNA size above `max_data`. Unlike §2 this is
 *defined* behaviour in C (an int converts modularly), so it is not UB — but a bug at
-above-maximum energy would render at the **low** end of the ramp.
+above-maximum energy renders at the **low** end of the ramp, which is the opposite of what
+the ramp is for.
 
-Recommendation: clamp to `1..MAX_BUG_COLOR (252)`, which keeps the purple energy and
-magenta poison sentinels (253/254) and blue (255) out of reach. Not applied yet: this
-belongs with the renderer, where it can be tested against the actual palette and
-palette-index constants rather than guessed at. Flagged because it is the same class
-as §2 and the same question — does the intent wrap or saturate.
+**The port.** `clampByteRamp(value)` (`dish.ts`) saturates to `1..MAX_BUG_COLOR (252)`,
+which keeps the purple energy (255), magenta poison (254) and cyan (253) sentinels out of
+reach while leaving every in-range value bit-identical to upstream's. Tested in
+`the view ramps saturate at the ends of the ramp instead of wrapping`.
+
+## 10. Not yet ported
+
+World serialisation: upstream saves and loads worlds through `QDataStream`
+(save/save-as/autosave). The port has no persistence. Note that upstream itself does
+**not** serialise `viewMode`, so a loaded world always renders in Default.

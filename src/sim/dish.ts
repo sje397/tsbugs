@@ -35,8 +35,10 @@ import {
   BKG_COLOR,
   ENERGY_COLOR,
   MAX_BUG_COLOR,
-  MAX_TERRAIN,
   POISON_COLOR,
+  TERRAIN_FLAT,
+  TERRAIN_MAX,
+  TERRAIN_MIN,
   SenseModel,
   type WorldParams,
 } from './params.js';
@@ -53,13 +55,65 @@ export enum ViewMode {
 }
 
 /**
- * `(unsigned char)` conversion. The original casts floating point to an 8-bit
- * type; values above 255 are truncated to the low byte on the compilers this
- * ran on. Terrain can exceed MAX_TERRAIN via removeBug(), which adds a payload
- * with no bound check, so the wrap is reachable and is kept.
+ * `(unsigned char)` conversion, for values that are legitimately in 0..255.
+ *
+ * Kept because most of the simulation is genuinely byte-valued. It is not the
+ * elevation path any more: terrain is a signed byte (clampElevation below), and
+ * a value that wrapped there would turn a peak into a pit.
  */
 function toByte(value: number): number {
   return Math.trunc(value) & 0xff;
+}
+
+/**
+ * Elevation is a signed byte: -127..+127, flat ground at TERRAIN_FLAT, holes
+ * below it. Clamping is what keeps that true, and it is load-bearing rather
+ * than decorative — `new Int8Array(1)[0] = 128` stores -128, so an over-full
+ * write would flip a peak into the deepest possible pit.
+ *
+ * Upstream had no such bound: an int with flat at 1 and a nominal ceiling of
+ * MAX_TERRAIN (10) that was already being violated from an unguarded direction —
+ * removeBug() adds a dying bug's payload to the ground with no check at all
+ * (petri_dish.cpp:474).
+ */
+export function clampElevation(elevation: number): number {
+  return elevation < TERRAIN_MIN ? TERRAIN_MIN : elevation > TERRAIN_MAX ? TERRAIN_MAX : elevation;
+}
+
+/**
+ * Elevation as the VM sees it: the two's-complement byte a `signed char` holds,
+ * so a hole reads 129..255 and flat ground reads 1. The VM reads its input slots
+ * as plain bytes, so a bug perceives the sign rather than a magnitude — it can
+ * tell a hole from level ground, which is the whole point of a signed elevation.
+ * The renderer maps the same value the other way (terrainColor): a colour ramp
+ * wants a monotonic scale, not a sign.
+ */
+export function elevationByte(elevation: number): number {
+  return elevation & 0xff;
+}
+
+
+/**
+ * The three scalar view modes — energy, age and DNA size — can compute past the
+ * end of the bug ramp whenever their value lies outside its configured range,
+ * and that is reachable: energy above max_energy, age beyond max_age, DNA size
+ * above max_data. Upstream's `unsigned char` return wrapped those mod 256, which
+ * puts a maximum-energy bug at the *bottom* of the ramp; saturation is plainly
+ * what the formula is reaching for. Held at 1..MAX_BUG_COLOR so the reserved
+ * sentinels (253 cyan, 254 poison, 255 energy) stay unreachable.
+ */
+export function clampByteRamp(value: number): number {
+  return value < 1 ? 1 : value > MAX_BUG_COLOR ? MAX_BUG_COLOR : value;
+}
+
+/**
+ * Elevation as a palette index: the signed byte shifted onto the bug ramp, so
+ * TERRAIN_MIN lands at the red end, flat ground sits just past mid-ramp, and
+ * TERRAIN_MAX reaches the green end. Monotonic in elevation, which is what a
+ * terrain view has to be to be readable at a glance.
+ */
+export function terrainColor(elevation: number): number {
+  return clampByteRamp(elevation + 127);
 }
 
 /**
@@ -120,7 +174,11 @@ export class PetriDish {
   private readonly rng: RandomSource;
 
   private readonly energy: Int32Array;
-  private readonly terrain: Int32Array;
+  /**
+   * Elevation, a signed byte: -127..+127, flat ground at TERRAIN_FLAT, holes
+   * below it. Written only through setTerrain, which clamps (clampElevation).
+   */
+  private readonly terrain: Int8Array;
   /** Running total of bug energy per cell. Upstream lets it drift; see removeBug. */
   private readonly bugTotal: Int32Array;
   private readonly poison: Uint8Array;
@@ -158,7 +216,7 @@ export class PetriDish {
 
     const cellCount = this.width * this.height;
     this.energy = new Int32Array(cellCount);
-    this.terrain = new Int32Array(cellCount);
+    this.terrain = new Int8Array(cellCount);
     this.bugTotal = new Int32Array(cellCount);
     this.poison = new Uint8Array(cellCount);
     this.bugCol = new Uint8Array(cellCount);
@@ -325,39 +383,48 @@ export class PetriDish {
 
     // Terrain modification — five mutually exclusive actions, selected by the
     // low 7 bits of the action output.
+    //
+    // Upstream bottomed out at 0 with flat ground at 1, so its three guards
+    // ("above 0", "above 1", "== 0") were three different ideas about elevation
+    // wearing the same range, and the negative half was unreachable. With a
+    // signed elevation each idea gets its own bound, and each guard below is the
+    // translation of one of them: a dig that clears ground runs to TERRAIN_MIN,
+    // a dig that only levels stops at flat, and a hole is any cell below flat
+    // rather than exactly one below. For the old 0..N range the behaviour is
+    // unchanged; the new part is that the floor is no longer the ground.
     for (const bug of bugs) {
       switch (bug.action % 128) {
-        case 0: // drop what you carry
-          if (bug.payload > 0 && Math.abs(this.terrain[hash]) < MAX_TERRAIN) {
-            this.terrain[hash] += bug.payload;
+        case 0: // drop what you carry, up to the ceiling
+          if (bug.payload > 0 && this.terrain[hash] < TERRAIN_MAX) {
+            this.setTerrain(hash, this.terrain[hash] + bug.payload);
             bug.payload = 0;
           }
           break;
-        case 1: // pick up from anywhere above 0
-          if (bug.payload === 0 && this.terrain[hash] > 0) {
-            this.terrain[hash] -= 1;
+        case 1: // dig — anywhere, down to rock bottom
+          if (bug.payload === 0 && this.terrain[hash] > TERRAIN_MIN) {
+            this.setTerrain(hash, this.terrain[hash] - 1);
             bug.payload = 1;
           }
           break;
-        case 2: // pick up only above 1
-          if (bug.payload === 0 && this.terrain[hash] > 1) {
-            this.terrain[hash] -= 1;
+        case 2: // dig, but only as far as flat ground — this one levels hills
+          if (bug.payload === 0 && this.terrain[hash] > TERRAIN_FLAT) {
+            this.setTerrain(hash, this.terrain[hash] - 1);
             bug.payload = 1;
           }
           break;
-        case 3: // fill in a hole
-          if (bug.payload > 0 && this.terrain[hash] === 0) {
-            this.terrain[hash] += bug.payload;
+        case 3: // fill a hole: any cell below flat ground
+          if (bug.payload > 0 && this.terrain[hash] < TERRAIN_FLAT) {
+            this.setTerrain(hash, this.terrain[hash] + bug.payload);
             bug.payload = 0;
           }
           break;
         case 4: // both, in that order
-          if (bug.payload === 0 && this.terrain[hash] > 1) {
-            this.terrain[hash] -= 1;
+          if (bug.payload === 0 && this.terrain[hash] > TERRAIN_FLAT) {
+            this.setTerrain(hash, this.terrain[hash] - 1);
             bug.payload = 1;
           }
-          if (bug.payload > 0 && this.terrain[hash] === 0) {
-            this.terrain[hash] += bug.payload;
+          if (bug.payload > 0 && this.terrain[hash] < TERRAIN_FLAT) {
+            this.setTerrain(hash, this.terrain[hash] + bug.payload);
             bug.payload = 0;
           }
           break;
@@ -462,7 +529,10 @@ export class PetriDish {
     for (let d = 0; d < 9; d++) {
       const nx = wrapX(d, x, this.width);
       const ny = wrapY(d, y, this.height);
-      this.terrainSense[d] = senseByte(this.terrain[nx * this.height + ny], MAX_TERRAIN);
+      // Elevation as the VM sees it: the signed byte, unwrapped. Upstream scaled
+      // this channel into 0..255 by MAX_TERRAIN and so lost the distinction
+      // between a hole and level ground; the byte IS the elevation now.
+      this.terrainSense[d] = elevationByte(this.terrain[nx * this.height + ny]);
     }
   }
 
@@ -592,6 +662,24 @@ export class PetriDish {
   }
 
   /**
+   * The only writer for terrain.
+   *
+   * One writer, one invariant: elevation cannot leave the signed byte's range
+   * whichever phase is writing. That matters because the paths are not equally
+   * careful — the drop action checks the ceiling first, but removeBug() adds a
+   * payload to the ground with no check at all (petri_dish.cpp:474), so without
+   * the clamp a bug dying on a peak would store 128 into an Int8Array and turn
+   * that peak into the deepest pit on the map.
+   */
+  private setTerrain(hash: number, elevation: number): void {
+    this.terrain[hash] = clampElevation(elevation);
+  }
+
+  /**
+   * petri_dish.cpp:474.
+   *
+   * A dead bug's payload goes back onto the ground, and its energy simply
+  /**
    * petri_dish.cpp:474.
    *
    * A dead bug's payload goes back onto the ground, and its energy simply
@@ -603,7 +691,7 @@ export class PetriDish {
     this.population--;
     this.deaths++;
     this.bugTotal[hash] -= e;
-    this.terrain[hash] += bug.payload;
+    this.setTerrain(hash, this.terrain[hash] + bug.payload);
   }
 
   // -------------------------------------------------------------- inspection
@@ -691,6 +779,44 @@ export class PetriDish {
 
   // ---------------------------------------------------------------- rendering
 
+  /**
+   * Raise and lower the ground before a run starts — an extension, not upstream.
+   *
+   * Upstream begins perfectly flat, and the population barely disturbs it: over
+   * 2000 ticks it moves ~2% of the grid and never digs more than 1-2 below flat,
+   * because a bug that digs is left carrying the payload it must then put back
+   * down (measured by tools/terrain-probe). A landscape worth looking at has to
+   * be seeded, since the bugs will not build one.
+   *
+   * Random per-cell elevation, then blurred, rather than white noise: the world
+   * moves by climbing, and a field of single-cell spikes would be a random climb
+   * cost rather than terrain. Blurring also cuts the amplitude, so `roughness` is
+   * the input spread, not the relief that comes out.
+   */
+  seedTerrain(roughness: number, rng: RandomSource, passes = 2): void {
+    const { width, height } = this;
+    const scratch = new Int8Array(this.terrain.length);
+
+    for (let hash = 0; hash < this.terrain.length; hash++) {
+      this.setTerrain(hash, TERRAIN_FLAT + rng.int(roughness * 2 + 1) - roughness);
+    }
+
+    for (let pass = 0; pass < passes; pass++) {
+      for (let x = 0; x < width; x++) {
+        for (let y = 0; y < height; y++) {
+          let sum = 0;
+          for (let d = 0; d < 9; d++) {
+            sum += this.terrain[wrapX(d, x, width) * height + wrapY(d, y, height)];
+          }
+          scratch[x * height + y] = clampElevation(Math.round(sum / 9));
+        }
+      }
+      this.terrain.set(scratch);
+    }
+
+    this.updateAllPixels();
+  }
+
   private updatePixel(hash: number): void {
     this.bugCol[hash] = this.findBugColorAt(hash);
     this.viewCol[hash] = this.findViewColorAt(hash);
@@ -737,27 +863,33 @@ export class PetriDish {
 
       case ViewMode.ENERGY:
         if (hasBugs) {
-          return Math.trunc(
-            ((MAX_BUG_COLOR - 1) * (bugs[0].energy - this.params.minEnergy)) /
-              (this.params.maxEnergy - this.params.minEnergy),
-          ) + 1;
+          return clampByteRamp(
+            Math.trunc(
+              ((MAX_BUG_COLOR - 1) * (bugs[0].energy - this.params.minEnergy)) /
+                (this.params.maxEnergy - this.params.minEnergy),
+            ) + 1,
+          );
         }
         break;
 
       case ViewMode.AGE:
         if (hasBugs) {
-          return Math.trunc(
-            (MAX_BUG_COLOR - 1) - ((MAX_BUG_COLOR - 1) * bugs[0].age) / this.params.maxAge,
-          ) + 1;
+          return clampByteRamp(
+            Math.trunc(
+              (MAX_BUG_COLOR - 1) - ((MAX_BUG_COLOR - 1) * bugs[0].age) / this.params.maxAge,
+            ) + 1,
+          );
         }
         break;
 
       case ViewMode.DNA_SIZE:
         if (hasBugs) {
-          return Math.trunc(
-            ((MAX_BUG_COLOR - 1) * (bugs[0].dna.size - this.params.minData)) /
-              (this.params.maxData - this.params.minData),
-          ) + 1;
+          return clampByteRamp(
+            Math.trunc(
+              ((MAX_BUG_COLOR - 1) * (bugs[0].dna.size - this.params.minData)) /
+                (this.params.maxData - this.params.minData),
+            ) + 1,
+          );
         }
         break;
 
@@ -769,14 +901,15 @@ export class PetriDish {
         break;
 
       case ViewMode.TERRAIN:
-        // Note this returns ENERGY_COLOR for a cell containing a bug, so the
-        // terrain view is only readable where no bug stands.
+        // Upstream special-cased flat ground to BKG_COLOR and elevation 0 to 1,
+        // which only made sense while elevation ran 0..MAX_TERRAIN and flat was
+        // a special value (1) rather than a level. A signed elevation has a
+        // neutral level, so the whole range maps onto the ramp instead: holes at
+        // the red end, flat mid-ramp, hills at the green end. A cell containing a
+        // bug is ENERGY_COLOR exactly as upstream had it — which does mean the
+        // terrain under a bug is the one thing this view cannot show.
         if (hasBugs) return ENERGY_COLOR;
-        return this.terrain[hash] === 1
-          ? BKG_COLOR
-          : this.terrain[hash] === 0
-            ? 1
-            : Math.trunc((this.terrain[hash] / MAX_TERRAIN) * 127 + 127);
+        return terrainColor(this.terrain[hash]);
     }
 
     return BKG_COLOR;

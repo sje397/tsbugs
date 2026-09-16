@@ -112,8 +112,25 @@ export const DEFAULT_PARAMS: WorldParams = {
   senseModel: SenseModel.SIGHTED,
 };
 
-/** petri_dish.cpp:13 */
-export const MAX_TERRAIN = 10;
+/**
+ * Elevation is a signed byte, so the bounds are the type's.
+ *
+ * Upstream's terrain was an unbounded int with flat ground at 1 and a nominal
+ * ceiling of MAX_TERRAIN = 10 (petri_dish.cpp:13) used both as the deposit guard
+ * and as the divisor of the terrain view. The ceiling was already being broken
+ * from removeBug(), which deposits a dying bug's payload with no check, and the
+ * floor at 0 meant digging could only ever flatten the world — a hole was the
+ * absence of ground, not a feature of it. The negative half of the type was
+ * therefore never reachable, so `abs(terrain) < MAX_TERRAIN` was really a
+ * ceiling test wearing a magnitude test's clothes.
+ *
+ * TERRAIN_FLAT stays at 1: the initial world is unchanged, and only the range
+ * below it is new. See DIVERGENCES.md §8, "terrain stores and renders a signed
+ * elevation".
+ */
+export const TERRAIN_MIN = -127;
+export const TERRAIN_MAX = 127;
+export const TERRAIN_FLAT = 1;
 
 /** petri_dish.cpp:158-161 — the reserved view-colour values. */
 export const ENERGY_COLOR = 255;
