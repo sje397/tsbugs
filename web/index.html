@@ -21,7 +21,9 @@
        the CSS below only affects the backing store, not the sampling. */
     image-rendering: pixelated;
   }
-  #panel { width: 300px; flex: none; }
+  /* 380px, not 300: the code listing is ~45 monospace characters wide, and a
+     wrapped instruction is unreadable. */
+  #panel { width: 380px; flex: none; }
   fieldset {
     border: 1px solid var(--line); background: var(--panel);
     margin: 0 0 12px; padding: 10px 12px 12px;
@@ -47,6 +49,26 @@
   .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
   .modes label { color: var(--text); cursor: pointer; }
   .modes input { vertical-align: -1px; }
+  /* Parameter panel and inspector. The group headings carry the promise the
+     original's dialog could not: whether a field does anything when you change it. */
+  .group { color: var(--hot); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; margin: 10px 0 2px; }
+  .group:first-child { margin-top: 0; }
+  .note { color: var(--dim); font-size: 11px; margin: -1px 0 4px; }
+  .msg { color: var(--dim); font-size: 11px; margin-top: 8px; min-height: 15px; }
+  .msg.bad { color: #e0916a; }
+  #params input[type=number] { width: 78px; }
+  #params input[type=range] { width: 78px; vertical-align: -4px; }
+  #params select { width: 150px; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border: 1px solid var(--line); vertical-align: -1px; }
+  #dis { max-height: 240px; overflow: auto; background: #14181b; border: 1px solid var(--line); padding: 4px 6px; font-size: 12px; }
+  #dis div { white-space: pre; }
+  #dis div.cur { background: #24402a; }
+  #dis div.mid { background: #3a3320; }
+  .dim { color: var(--dim); }
+  /* The gene chart is a chart, not pixel art: it draws one bar per CSS pixel and
+     sizes its own backing store, so it scales smoothly where the world does not. */
+  #varBox { height: 96px; }
+  #variance { width: 100%; height: 100%; background: #14181b; border: 1px solid var(--line); image-rendering: auto; }
   .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
   .stats span:nth-child(odd) { color: var(--dim); }
   .stats span:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
@@ -96,6 +118,36 @@
       <span><input id="showByte" type="number" min="0" value="0"></span>
     </div>
   </fieldset>
+
+  <fieldset id="paramsField">
+    <legend>world parameters</legend>
+    <div id="params"></div>
+    <div id="paramsMsg" class="msg">every change is followed by a read-back of the world</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>bug inspector</legend>
+    <div id="bug" class="dim">click a bug in the world</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>gene variance</legend>
+    <div class="note">per gene position, the fraction of the population not holding the
+      commonest byte there — 0 means every bug agrees, 1 means none do</div>
+    <!-- A fixed-height box, because `height: auto` in the narrow-screen rule below
+         would otherwise derive the chart's height from its own backing store, and
+         the chart sizes that from this box. -->
+    <div id="varBox"><canvas id="variance" title="Bar height and colour are the spread at that
+column's genes: taller and greener means the population holds the same byte there. Positions past
+the end of every genome read 0 and are drawn as empty columns; they are not counted as fixed."></canvas></div>
+    <div class="note">click a column to set the dna byte the DNA-value view mode reads</div>
+    <div class="row">
+      <span>follow</span>
+      <span><input id="varFollow" type="checkbox" checked> measure as it runs</span>
+    </div>
+    <div id="varMsg" class="msg">not measured yet</div>
+  </fieldset>
+
 
   <fieldset>
     <legend>world</legend>

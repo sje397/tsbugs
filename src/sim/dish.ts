@@ -105,10 +105,17 @@ export interface ParamUpdate {
 const REBUILD_ONLY = new Set<string>(['width', 'height', 'poison']);
 
 /**
- * Fields each bug's Processor is built with, so a change reaches the next
- * generation rather than the living one.
+ * Fields each bug copies at construction — its Processor's instruction budget and
+ * stack size, and the mutation rate its Dna is built with — so a change reaches
+ * bugs born after it rather than the living ones.
+ *
+ * `mutation` belongs here and was reported as applied when this set was written:
+ * the field is read only from Bug.createRandom/createChild (bug.cpp:52,76,96),
+ * which copy it into a new Dna, and Dna keeps its own copy with no reader of
+ * `world_params.mutation` on the mutation path (dna.cpp:114). So a dial labelled
+ * live would have been describing a rate that no living bug was using.
  */
-const PER_BUG = new Set<string>(['stepsPerUpdate', 'stackSize']);
+const PER_BUG = new Set<string>(['stepsPerUpdate', 'stackSize', 'mutation']);
 
 /**
  * The ranges the simulation's own arithmetic needs. Every one of these pairs is
@@ -263,9 +270,9 @@ export class PetriDish {
    * returned rather than rediscovered:
    *
    *  - `applied`  — read by the step phase or balance(); live on the next tick.
-   *  - `deferred` — stepsPerUpdate and stackSize, which each bug's Processor is
-   *                 built with; they reach bugs born after the change, and leave
-   *                 the living generation as it was built.
+   *  - `deferred` — stepsPerUpdate and stackSize (each bug's Processor) and
+   *                 mutation (each bug's Dna); they reach bugs born after the
+   *                 change, and leave the living generation as it was built.
    *  - `ignored`  — width, height and poison, which size or populate the arrays in
    *                 the constructor. They are refused rather than half-applied:
    *                 a `params.width` that disagrees with the grid is worse than a

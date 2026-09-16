@@ -510,6 +510,37 @@ test('setParams defers per-bug fields to the next generation', () => {
   );
 });
 
+test('setParams defers mutation, because only a new Dna reads it', () => {
+  const dish = run(400);
+  const living = firstBug(dish);
+  const rateWas = living.dna.mutationRate;
+
+  const update = dish.setParams({ mutation: 0.125 });
+  assert.deepEqual(update.deferred, ['mutation'], 'a rate the living generation ignores is not a live change');
+  assert.deepEqual(update.applied, []);
+
+  // Bug.createRandom/createChild copy params.mutation into a new Dna, and nothing
+  // in the simulation ever writes to a living bug's rate, so the rate it was built
+  // with is the rate it mutates at. Reported as live, this dial would have been
+  // describing a rate no living bug was using.
+  assert.equal(living.dna.mutationRate, rateWas);
+
+  const known = new Set<Bug>();
+  dish.forEachBug((bug) => known.add(bug));
+
+  let newcomer: Bug | undefined;
+  for (let i = 0; i < 400 && newcomer === undefined; i++) {
+    dish.step();
+    dish.forEachBug((bug) => {
+      if (!known.has(bug)) newcomer ??= bug;
+    });
+  }
+
+  assert.ok(newcomer !== undefined, 'no bug arrived within 400 ticks — fixture too quiet');
+  assert.equal(newcomer.dna.mutationRate, 0.125, 'a bug born after the change is built with the new rate');
+  assert.equal(living.dna.mutationRate, rateWas, 'and the bug that was alive at the change keeps its own');
+});
+
 test('setParams ignores fields the constructor owns, without half-applying them', () => {
   const dish = run(100);
   const poisonedBefore = countPoisoned(dish);
