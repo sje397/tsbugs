@@ -82,7 +82,7 @@ export class Processor {
   private bp = 0;
   private acc = 0;
 
-  private readonly stepsPerUpdate: number;
+  private readonly steps: number;
   private readonly rng: RandomSource;
 
   /** `rom` is copied, never aliased — see note 3 above. */
@@ -91,7 +91,7 @@ export class Processor {
     this.stack = new Uint8Array(stackSize);
     this.inp = new Uint8Array(INPUTS);
     this.out = new Uint8Array(OUTPUTS);
-    this.stepsPerUpdate = stepsPerUpdate;
+    this.steps = stepsPerUpdate;
     this.rng = rng;
   }
 
@@ -126,9 +126,19 @@ export class Processor {
     this.inp.set(values.subarray(0, INPUTS - start), start);
   }
 
+  /**
+   * The instruction budget this Processor was built with — diagnostic, and the
+   * only way to see a parameter that is captured per bug rather than read live
+   * (see PetriDish.setParams). Upstream has the same field private and no way to
+   * read it, which is why "changing it did nothing" was invisible there.
+   */
+  get stepsPerUpdate(): number {
+    return this.steps;
+  }
+
   /** processor.cpp: `for(i < steps_per_update) step();` */
   run(): void {
-    for (let i = 0; i < this.stepsPerUpdate; i++) this.step();
+    for (let i = 0; i < this.steps; i++) this.step();
   }
 
   /**

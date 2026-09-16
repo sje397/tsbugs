@@ -151,6 +151,41 @@ export function senseByte(value: number, max: number): number {
 /** Shared empty list, so reading an unoccupied cell never allocates. */
 const EMPTY: readonly Bug[] = [];
 
+/**
+ * What setParams() did with each field it was offered. See the method: `applied`
+ * is live on the next tick, `deferred` reaches bugs born after the change,
+ * `ignored` cannot mean anything mid-world, and a non-empty `refused` means the
+ * whole call was dropped and nothing was applied.
+ */
+export interface ParamUpdate {
+  applied: string[];
+  deferred: string[];
+  ignored: string[];
+  refused: string[];
+}
+
+/** Fields the constructor consumes: they size or populate the world's arrays. */
+const REBUILD_ONLY = new Set<string>(['width', 'height', 'poison']);
+
+/**
+ * Fields each bug's Processor is built with, so a change reaches the next
+ * generation rather than the living one.
+ */
+const PER_BUG = new Set<string>(['stepsPerUpdate', 'stackSize']);
+
+/**
+ * The ranges the simulation's own arithmetic needs. Every one of these pairs is
+ * divided or scaled by its difference — the energy view by
+ * `maxEnergy - minEnergy`, the DNA-size view by `maxData - minData`, and the
+ * energy sense by `maxEEnergy` — so a zero or negative span is not a preference
+ * to be honoured, it is a division by zero or a sign nobody intended.
+ */
+const VALID_RANGES: readonly (readonly [keyof WorldParams, keyof WorldParams])[] = [
+  ['minData', 'maxData'],
+  ['minEnergy', 'maxEnergy'],
+  ['minEEnergy', 'maxEEnergy'],
+];
+
 /** What check_integrity() reports. Every field is a count or a total it warns on. */
 export interface IntegrityReport {
   /** The maintained population counter. */
@@ -182,7 +217,11 @@ export class PetriDish {
   /** Palette index per cell — the original's `viewCol`, and what the renderer blits. */
   readonly viewCol: Uint8Array;
 
-  private readonly params: WorldParams;
+  /**
+   * The running parameters. Not readonly: setParams() replaces the struct in
+   * place, which is the one way a world's rules can change without rebuilding it.
+   */
+  private params: WorldParams;
   private readonly rng: RandomSource;
 
   private readonly energy: Int32Array;
@@ -220,6 +259,22 @@ export class PetriDish {
   births = 0;
   deaths = 0;
 
+  /**
+   * Bugs balance() added to hold the world at its minimum energy — not in
+   * upstream, which reports no such figure.
+   *
+   * It earns its place because without it the population statistics lie about what
+   * the population is doing. balance() tops the world back up with *generation 0*
+   * bugs whenever bug energy falls below minBugEnergy, and that turns out to be
+   * most of what a world does: over 2000 ticks of the roughness-20 fingerprint
+   * world, 631 bugs were injected against 232 births — 2.7 top-ups per birth —
+   * while the mean generation sat below 1 and maxGen, which is reset at the top of
+   * every tick, wandered between 2 and 7. Three quarters of the population is
+   * generation zero at any moment, which is why nothing looks like it is evolving.
+   * Measured by tools/population-probe.mts.
+   */
+  injected = 0;
+
   constructor(params: WorldParams, rng: RandomSource) {
     this.params = params;
     this.rng = rng;
@@ -255,6 +310,73 @@ export class PetriDish {
 
   get totalEnergy(): number {
     return this.params.totalEnergy;
+  }
+
+  /**
+   * The live parameters, as a copy — setParams is the only writer, and a caller
+   * that could hold the struct could also quietly change the world's rules
+   * without any of setParams' reporting. A copy costs an object per read and
+   * makes that impossible rather than merely discouraged.
+   */
+  get worldParams(): Readonly<WorldParams> {
+    return { ...this.params };
+  }
+
+  /**
+   * Change a world's parameters in place, and say what that meant.
+   *
+   * Upstream's Settings dialog rebuilt a `WorldParams` and called
+   * `set_world_params()`, which copied the struct and did nothing else — so a
+   * field the step phase happens to read took effect at once, and a field
+   * consumed at construction time silently did nothing at all. The dialog offered
+   * both kinds with no way to tell them apart. That distinction is real, so it is
+   * returned rather than rediscovered:
+   *
+   *  - `applied`  — read by the step phase or balance(); live on the next tick.
+   *  - `deferred` — stepsPerUpdate and stackSize, which each bug's Processor is
+   *                 built with; they reach bugs born after the change, and leave
+   *                 the living generation as it was built.
+   *  - `ignored`  — width, height and poison, which size or populate the arrays in
+   *                 the constructor. They are refused rather than half-applied:
+   *                 a `params.width` that disagrees with the grid is worse than a
+   *                 field that plainly did nothing, so the merge leaves them out
+   *                 and the caller rebuilds the world if it wants them.
+   *
+   * Atomic. If the merged set breaks a range the simulation's own arithmetic needs
+   * (minData/maxData, minEnergy/maxEnergy, minEEnergy/maxEEnergy), it refuses the
+   * whole set and names why — half a world applied is a state nobody can reason
+   * about afterwards.
+   */
+  setParams(next: Partial<WorldParams>): ParamUpdate {
+    const applied: string[] = [];
+    const deferred: string[] = [];
+    const ignored: string[] = [];
+
+    const merged: WorldParams = { ...this.params };
+    const writable = merged as unknown as Record<string, unknown>;
+    for (const key of Object.keys(next) as (keyof WorldParams)[]) {
+      const value = next[key];
+      if (value === undefined) continue;
+      if (REBUILD_ONLY.has(key)) {
+        ignored.push(key);
+        continue;
+      }
+      if (PER_BUG.has(key)) deferred.push(key);
+      else applied.push(key);
+      writable[key] = value;
+    }
+
+    const refused: string[] = [];
+    for (const [low, high] of VALID_RANGES) {
+      const min = merged[low];
+      const max = merged[high];
+      if (!(min < max)) refused.push(`${low} (${min}) must be below ${high} (${max})`);
+    }
+    // A refusal changes nothing, so nothing is reported as applied.
+    if (refused.length > 0) return { applied: [], deferred: [], ignored: [], refused };
+
+    this.params = merged;
+    return { applied, deferred, ignored, refused };
   }
 
   /** petri_dish.cpp:667 */
@@ -635,6 +757,7 @@ export class PetriDish {
       bug.energy = e;
       this.bugTotal[hash] += e;
       this.population++;
+      this.injected++;
 
       if (!this.activeSet.has(hash)) {
         this.activeSet.add(hash);
@@ -732,6 +855,18 @@ export class PetriDish {
   /** The bugs standing on a cell, in list order — first is normally the youngest. */
   bugsAt(hash: number): readonly Bug[] {
     return this.cells.get(hash) ?? EMPTY;
+  }
+
+  /**
+   * Every live bug, walking the grid in the order the step phase does, with the
+   * cell each one stands on. There is no flat list of bugs to hand out, and the
+   * population statistics and the gene histogram both need the whole population,
+   * so this is the one walk they share.
+   */
+  forEachBug(visit: (bug: Bug, hash: number) => void): void {
+    for (const hash of this.activeCells) {
+      for (const bug of this.cells.get(hash) ?? EMPTY) visit(bug, hash);
+    }
   }
 
   /**

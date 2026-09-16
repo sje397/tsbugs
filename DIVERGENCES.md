@@ -178,7 +178,35 @@ which keeps the purple energy (255), magenta poison (254) and cyan (253) sentine
 reach while leaving every in-range value bit-identical to upstream's. Tested in
 `the view ramps saturate at the ends of the ramp instead of wrapping`.
 
-## 10. Not yet ported
+## 10. Diverged: parameters report what they did
+
+**Upstream.** `Settings::apply()` builds a fresh `WorldParams` and hands it to
+`set_world_params()`, which copies the struct (`petri_dish.cpp:120`) and does nothing else.
+Which fields that changes is then decided by where each one happens to be read: a value the
+step phase reads takes effect on the next tick, and a value consumed in the constructor — the
+grid's dimensions, the poison count — silently does nothing at all, with nothing to say
+which is which. The dialog offers both kinds side by side, and its width and height fields
+are permanently disabled, which is the authors' own workaround for the half they could not
+make live.
+
+**The port.** `PetriDish.setParams()` (`dish.ts`) returns a report rather than leaving the
+caller to guess: `applied` (read by the step phase or `balance()`, live on the next tick),
+`deferred` (a `Processor`'s `stepsPerUpdate` and `stackSize`, which reach bugs born after the
+change, because a Processor is built with them and keeps them), `ignored` (`width`, `height`
+and `poison`, refused rather than half-applied so that `params.width` can never disagree with
+the grid it describes), and `refused`.
+
+Two choices beyond the report. It is **atomic**: a set that breaks a range the simulation's
+own arithmetic divides by (`minData/maxData`, `minEnergy/maxEnergy`, `minEEnergy/maxEEnergy`)
+is refused whole and named, because half a world applied is a state nobody can reason about
+afterwards. And `worldParams` returns a **copy**, so a caller cannot quietly change the
+world's rules behind setParams' back.
+
+Tested in `setParams makes a live field live, in both directions`, `setParams defers per-bug
+fields to the next generation`, `setParams ignores fields the constructor owns, without
+half-applying them` and `setParams refuses an inverted range atomically`.
+
+## 11. Not yet ported
 
 World serialisation: upstream saves and loads worlds through `QDataStream`
 (save/save-as/autosave). The port has no persistence. Note that upstream itself does

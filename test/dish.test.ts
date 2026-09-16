@@ -37,6 +37,7 @@ import {
   type WorldParams,
 } from '../src/sim/params.js';
 import { Rng } from '../src/sim/rng.js';
+import type { Bug } from '../src/sim/bug.js';
 
 const CELLS = DEFAULT_PARAMS.width * DEFAULT_PARAMS.height;
 
@@ -607,3 +608,195 @@ function energyColour(energy: number): number {
     ) + 1
   );
 }
+
+/**
+ * setParams: the one way a world's rules can change without being rebuilt.
+ *
+ * Upstream's Settings dialog rebuilt the struct and copied it, so which fields
+ * took effect was decided by whether the step phase happened to read them. The
+ * tests below hold the port to the reported contract instead: live fields change
+ * behaviour on the next tick, per-bug fields reach the next generation, fields the
+ * constructor owns are refused outright, and an invalid set changes nothing at all.
+ */
+
+function firstBug(dish: PetriDish): Bug {
+  let found: Bug | undefined;
+  dish.forEachBug((bug) => {
+    found ??= bug;
+  });
+  assert.ok(found !== undefined, 'the fixture must contain a bug');
+  return found;
+}
+
+function countPoisoned(dish: PetriDish): number {
+  let poisoned = 0;
+  for (let hash = 0; hash < CELLS; hash++) if (dish.isPoisoned(hash)) poisoned++;
+  return poisoned;
+}
+
+test('setParams makes a live field live, in both directions', () => {
+  // minBugEnergy is read by balance() on every tick, which makes it the cleanest
+  // field to prove liveness with: lower it and the top-ups stop, raise it and they
+  // start again. Both directions, because a one-way test can pass for the wrong
+  // reason — a world with no bugs has nothing to top up either.
+  const dish = run(300);
+  const injectedAtStart = dish.injected;
+  assert.ok(injectedAtStart > 0, 'the default world is topped up as it establishes itself');
+
+  assert.deepEqual(dish.setParams({ minBugEnergy: 0 }).applied, ['minBugEnergy']);
+  for (let i = 0; i < 100; i++) dish.step();
+  assert.equal(dish.injected, injectedAtStart, 'a lowered minimum stops the top-ups');
+
+  // A raised minimum needs energy to hand out. Deaths have been returning it to
+  // the undistributed pool while the minimum was zero, and the fixture needs at
+  // least one top-up's worth of headroom or this test cannot fail.
+  const headroom = dish.totalEnergy - dish.bugEnergy - dish.energyEnergy;
+  assert.ok(headroom >= DEFAULT_PARAMS.maxEnergy, `fixture needs headroom, has ${headroom}`);
+
+  // One above the current income, so the loop must fire at least once.
+  const update = dish.setParams({ minBugEnergy: dish.bugEnergy + 1 });
+  assert.deepEqual(update.applied, ['minBugEnergy']);
+  assert.deepEqual(update.refused, []);
+
+  dish.step();
+  assert.ok(
+    dish.injected > injectedAtStart,
+    'the raised minimum must reach balance() on the next tick — a setParams that ' +
+      'stored the struct without the step reading it leaves this unchanged',
+  );
+});
+
+test('setParams refuses an inverted range atomically', () => {
+  const dish = run(100);
+  const before = dish.worldParams;
+
+  // minEnergy above maxEnergy is the pair the energy view divides by, and the
+  // moveEnergy beside it is perfectly valid on its own.
+  const update = dish.setParams({ minEnergy: 900, moveEnergy: 7 });
+
+  assert.equal(update.refused.length, 1);
+  assert.match(update.refused[0], /minEnergy \(900\) must be below maxEnergy \(800\)/);
+  assert.deepEqual(update.applied, [], 'a refused call applies nothing');
+  assert.deepEqual(dish.worldParams, before, 'and leaves the world exactly as it was');
+  assert.equal(
+    dish.worldParams.moveEnergy,
+    before.moveEnergy,
+    'the valid half of a refused set must not leak in',
+  );
+});
+
+test('setParams defers per-bug fields to the next generation', () => {
+  const dish = run(600);
+  const living = firstBug(dish);
+  assert.equal(living.processor.stepsPerUpdate, DEFAULT_PARAMS.stepsPerUpdate);
+
+  const update = dish.setParams({ stepsPerUpdate: 8 });
+  assert.deepEqual(update.deferred, ['stepsPerUpdate']);
+  assert.deepEqual(update.applied, []);
+
+  // Nobody alive is rebuilt: a Processor takes its budget at construction and has
+  // no setter, so the living generation keeps the one it was built with.
+  const now = new Set<number>();
+  dish.forEachBug((bug) => now.add(bug.processor.stepsPerUpdate));
+  assert.deepEqual([...now], [DEFAULT_PARAMS.stepsPerUpdate]);
+
+  // The next bug into the world — born or topped up — is built with the new one.
+  const before = new Set<Bug>();
+  dish.forEachBug((bug) => before.add(bug));
+
+  let newcomer: Bug | undefined;
+  for (let i = 0; i < 300 && newcomer === undefined; i++) {
+    dish.step();
+    dish.forEachBug((bug) => {
+      if (!before.has(bug)) newcomer ??= bug;
+    });
+  }
+
+  assert.ok(newcomer !== undefined, 'no bug arrived within 300 ticks — fixture too quiet');
+  assert.equal(newcomer.processor.stepsPerUpdate, 8);
+  assert.equal(
+    living.processor.stepsPerUpdate,
+    DEFAULT_PARAMS.stepsPerUpdate,
+    'and the bug that was alive at the change still has its own',
+  );
+});
+
+test('setParams ignores fields the constructor owns, without half-applying them', () => {
+  const dish = run(100);
+  const poisonedBefore = countPoisoned(dish);
+
+  const update = dish.setParams({ width: 10, height: 10, poison: 999 });
+
+  assert.deepEqual(update.ignored.sort(), ['height', 'poison', 'width']);
+  assert.deepEqual(update.applied, []);
+  assert.deepEqual(update.deferred, []);
+  assert.equal(dish.width, DEFAULT_PARAMS.width, 'the grid keeps its shape');
+  assert.equal(dish.viewCol.length, CELLS);
+  assert.equal(countPoisoned(dish), poisonedBefore, 'and no cells were poisoned');
+
+  // The half that matters: a naive merge stores what it was given, so every later
+  // reader of params.width disagrees with the grid it describes.
+  assert.equal(dish.worldParams.width, DEFAULT_PARAMS.width);
+  assert.equal(dish.worldParams.height, DEFAULT_PARAMS.height);
+  assert.equal(dish.worldParams.poison, DEFAULT_PARAMS.poison);
+});
+
+test('forEachBug yields the whole population, stacked cells included', () => {
+  // Bugs do share cells, but only a handful at a time and not at any particular
+  // tick, so the walk is held to its invariant on every tick until one appears
+  // rather than at a step count that happened to work.
+  const dish = run(120);
+  const seen = new Set<Bug>();
+  let count = 0;
+  let tickOfSharedCell = -1;
+
+  for (let tick = 1; tick <= 600 && tickOfSharedCell < 0; tick++) {
+    dish.step();
+
+    count = 0;
+    let misplaced = 0;
+    let stackedBugs = 0;
+    seen.clear();
+    dish.forEachBug((bug, hash) => {
+      count++;
+      if (seen.has(bug)) misplaced++;
+      seen.add(bug);
+      const here = dish.bugsAt(hash);
+      if (!here.includes(bug)) misplaced++;
+      if (here.length > 1) stackedBugs++;
+    });
+
+    assert.equal(
+      count,
+      dish.population,
+      `walk disagreed with the population counter at tick ${tick}`,
+    );
+    assert.equal(misplaced, 0, `a bug was misplaced in the walk at tick ${tick}`);
+    if (stackedBugs > 0) tickOfSharedCell = tick;
+  }
+
+  assert.ok(
+    tickOfSharedCell > 0,
+    'no cell was shared within 600 ticks, so the inner loop over a cell never ran',
+  );
+  assert.equal(dish.checkIntegrity().bugCount, count, 'the independent walk agrees');
+});
+
+test('injected counts balance() top-ups — and the world has no other source', () => {
+  // The counter exists to separate top-ups from reproduction, and the difference
+  // turns out to be most of the world's turnover: balance() is the only way bugs
+  // arrive in the first place. With the minimum set to zero nothing is ever added,
+  // and because a world with no bugs cannot reproduce, it stays empty.
+  const barren = run(300, { minBugEnergy: 0 });
+  assert.equal(barren.injected, 0);
+  assert.equal(barren.population, 0, 'no bugs, no births, no population');
+  assert.equal(barren.births, 0);
+
+  const world = run(300);
+  assert.ok(world.injected > 0, 'a world held at its minimum is topped up repeatedly');
+  assert.ok(world.births > 0, 'and it reproduces as well');
+  assert.ok(
+    world.injected > world.births,
+    `top-ups dominate the turnover: ${world.injected} injected against ${world.births} born`,
+  );
+});
