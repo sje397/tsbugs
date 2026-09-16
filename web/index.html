@@ -41,6 +41,9 @@
     font: inherit; color: var(--text); background: #232a2f;
     border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px; width: 90px;
   }
+  /* 90px is too narrow for the size select's own option text ("240 x 240" clips to
+     "240 x 2" once the dropdown arrow and padding are taken out of it). */
+  #size { width: 112px; }
   .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
   .modes label { color: var(--text); cursor: pointer; }
   .modes input { vertical-align: -1px; }
