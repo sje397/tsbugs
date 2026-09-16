@@ -48,6 +48,25 @@ function run(steps: number, overrides: Partial<WorldParams> = {}, seed = 1234): 
   return dish;
 }
 
+/**
+ * Everyone alive, by genome (as hex) and by identity, with the top generation.
+ *
+ * Holding the Bug references is the point: a die-off leaves them unreachable from
+ * the dish, so if one of them is alive again afterwards it was returned by
+ * something rather than created.
+ */
+function census(dish: PetriDish): { genomes: Set<string>; bugs: Set<Bug>; maxGeneration: number } {
+  const genomes = new Set<string>();
+  const bugs = new Set<Bug>();
+  let maxGeneration = 0;
+  dish.forEachBug((bug) => {
+    genomes.add(Buffer.from(bug.dna.data).toString('hex'));
+    bugs.add(bug);
+    if (bug.generation > maxGeneration) maxGeneration = bug.generation;
+  });
+  return { genomes, bugs, maxGeneration };
+}
+
 function snapshot(dish: PetriDish): string {
   return [
     dish.population,
@@ -569,4 +588,48 @@ test('injected counts balance() top-ups — and the world has no other source', 
     world.injected > world.births,
     `top-ups dominate the turnover: ${world.injected} injected against ${world.births} born`,
   );
+});
+
+
+test('balance() injects fresh founders — a die-off is not undone by recycling', () => {
+  // Top-ups are most of the world's turnover (the test above), so what a top-up
+  // IS decides whether a world can change at all. balance() calls
+  // Bug.createRandom: a genome drawn from the rng, generation 0. It keeps no pool
+  // of the dead, so a world that loses its population does not get that
+  // population back — it gets strangers.
+  //
+  // That is exactly the difference between a world that can outgrow a bad genome
+  // and one that cannot. Recycling would re-mint the dead, generation and all,
+  // and the world would be pinned to whatever it last held no matter how often it
+  // were refilled. So this asserts the two things a recycling implementation
+  // breaks: the generation counter returning to zero, and every genome on the
+  // grid being one that nobody had before.
+  const dish = run(2000);
+  const before = census(dish);
+  assert.ok(
+    before.maxGeneration > 0,
+    'the world must have bred before the die-off, or there is nothing to inherit',
+  );
+
+  // maxAge 0 kills every bug: age >= 0 holds for all of them. The die-off and the
+  // refill fall in the SAME tick — balance() runs last, and with no bug energy
+  // left it puts a fresh population back immediately — so the census taken after
+  // this step is entirely founders, and there is no empty tick to observe.
+  const deathsBefore = dish.deaths;
+  const injectedBefore = dish.injected;
+  dish.setParams({ maxAge: 0 } satisfies Partial<WorldParams>);
+  dish.step();
+  const after = census(dish);
+
+  assert.equal(dish.deaths - deathsBefore, before.bugs.size, 'every bug alive was killed');
+  assert.ok(after.bugs.size > 0, 'and the world was refilled on the same tick');
+  assert.equal(dish.injected - injectedBefore, dish.population, 'every arrival was an injection');
+  assert.equal(after.maxGeneration, 0, 'founders are generation 0, not the dead population');
+  assert.equal(dish.maxGen, 0, 'and the tick records no generation higher than they carry');
+
+  for (const bug of before.bugs) {
+    assert.ok(!after.bugs.has(bug), 'a bug that died is not alive again');
+  }
+  const recycled = [...after.genomes].filter((genome) => before.genomes.has(genome));
+  assert.deepEqual(recycled, [], 'and no genome on the grid is one that had died');
 });
