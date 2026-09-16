@@ -278,6 +278,17 @@ change, because a Processor is built with them and keeps them), `ignored` (`widt
 and `poison`, refused rather than half-applied so that `params.width` can never disagree with
 the grid it describes), and `refused`.
 
+**`mutation` belongs in the deferred list, and the first version of this report got
+it wrong.** The field was classified as live, which is what a rate dial reads as. It is
+not: the only readers are the Bug creation paths (`bug.cpp:52,76,96`), which copy it
+into a new `Dna`, and `Dna` then keeps its own copy with no reader of
+`world_params.mutation` on the mutation path (`dna.cpp:114`). So a rate labelled live
+was describing a rate no living bug was using — the dial would have appeared to work and
+changed nothing until the next birth, and the report that said otherwise is the same
+failure this section is about, committed by the port instead of inherited from it. It is
+now in `PER_BUG` beside `stepsPerUpdate` and `stackSize`, with the source lines written
+into the set's comment, and the panel labels the group accordingly.
+
 Two choices beyond the report. It is **atomic**: a set that breaks a range the simulation's
 own arithmetic divides by (`minData/maxData`, `minEnergy/maxEnergy`, `minEEnergy/maxEEnergy`)
 is refused whole and named, because half a world applied is a state nobody can reason about
@@ -453,3 +464,73 @@ drift visible: `bugTotalAt(hash)` reads the cache the gate reads, `checkIntegrit
 reports the counters beside the real sums for population and both energy pools (though
 not for `bugTotal` — nothing asserts this one, which is why it needed measuring), and
 the comment in `doEatingAndSeeing` says what is missing and where it came from.
+
+## 15. Diverged: the gene histogram is a chart — and what it counts as "fixed"
+
+Upstream's `HistogramDialog` paints one bar per gene position into a widget a few
+hundred pixels wide, on a 500 ms timer, using a palette of its own. The port draws a
+canvas instead, and three choices in it are divergences rather than ports:
+
+- **The collapse is stated, and it is MAX per column, not mean.** With 8192 positions
+  in ~350 pixels, Qt decided what survived by paint order — a detail nobody chose and
+  no one could test. Here a column shows the largest spread among the positions it
+  covers, and the readout says so ("8192 genes into 352 columns, max per column"). The
+  cost is stated rather than hidden: a column at 1.0 means *at least one* position in
+  it is unconstrained, not that all of them are.
+- **One palette, not two.** Upstream's dialog builds its own 256-entry red→yellow→green
+  table spanning 0..255, while the world's table spans 1..252 — so the same spread
+  value was two different colours on the two surfaces. The chart uses the world's table
+  (index `1 + round(v * 251)`), with the direction flipped so it reads the same way the
+  view modes do: low spread red at the left, high spread green.
+- **A readout line, which upstream has no equivalent of.** It leads with the tick the
+  measurement came from, because the chart is refreshed on a timer rather than per
+  frame and a number without its tick is indistinguishable from a current one.
+
+**What "fixed" counts — the decision this section exists for.** The line reports how
+many positions read 0 spread, and the honest answer counts only positions *within the
+genome*. A position past the end of every genome also reads 0, because nothing is
+allocated there — but that is absence, not conservation, and counting it reports
+conserved genes the population does not have.
+
+Measured, seed 2024, tick 200: **128 of 8192 positions read 0 spread, and every one of
+them is past the longest genome.** The count within the genome is **0**. The first
+version of this readout printed 128.
+
+The unit test that existed when that shipped could not tell the two apart: it passed
+`fixedPositions` and `fixedWithinGenome` as the same number, so it agreed with the bug.
+The test that can is the one that puts them against each other (128 vs 0 — the real
+world's shape); reverting `chartSummary` to read `fixedPositions` fails exactly that
+assertion and leaves the older one green.
+
+The tail is still *drawn* — empty columns to the right of the last genome — because
+"no bug reaches here" is information, and the canvas tooltip says those columns are not
+counted as fixed. Drawing and counting are separate decisions; this section is about
+the second one.
+
+`chartSummary` takes the measurement whole (`spread`) rather than field by field. The
+page imports built JavaScript, so nothing type-checks it against `GeneSpread`, and a
+hand-copied field list is exactly where a number silently becomes `undefined` — which
+is how the wrong count above got in.
+
+**How often the count is non-zero, measured rather than assumed.** 24 seeds, 20,000
+ticks each, sampled every 2,000 (`/tmp` sweep, seed-2024 pinned run asserted first as
+a harness control): **2 of 24 worlds show any conserved position** — seeds 17 and 19,
+with peaks of 14 and 4 positions, and both are self-sustaining worlds (pop ~600-700,
+max generation 130 and 404). The other 22 are injection-pinned (pop ~90, ~4,200
+top-ups and ~2,400 births against ~6,500 deaths per 20k ticks) and read **0 for a
+structural reason, not a search that came up empty**: `balance()` injects fresh random
+gen-0 founders, and any near-fixation is broken by the next random genome landing on
+it. So a 0 on the page normally means "this world is being held up by top-ups, and
+conservation is not measurable here" — which is information about the world, and is
+not the same statement as "the population is genetically uniform".
+
+Lowering the mutation dial does not change that, which is worth recording because it is
+the intuitive guess: seed 19 at `mutation` 0.5 / 0.1 / 0.02 gives in-genome counts of
+4 / 0 / 0, because the dial that matters is the attractor, not the rate.
+
+The same three runs are where the invariant above was measured, and they are why it is
+a test rather than a comment: `fixedPositions - fixedWithinGenome` was 374, 24 and 175
+against longest genomes of 7,818, 8,168 and 8,017 — the tail arithmetic holds exactly,
+so an assertion on it distinguishes the two counts on a real world rather than on a
+hand-built array. Reverting `geneSpread` to count the tail as conservation fails that
+test and the two beside it, and passes nothing that should have caught it.
