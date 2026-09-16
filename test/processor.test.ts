@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Instruction, INPUTS, MAX_I, OUTPUTS, Processor } from '../src/sim/processor.js';
+import { Instruction, INPUTS, MAX_I, OPERAND_BYTES, OUTPUTS, Processor } from '../src/sim/processor.js';
 import { Rng } from '../src/sim/rng.js';
 
 /**
@@ -224,4 +224,102 @@ test('qrand() % 0xff can never produce 255, but reaches 254', () => {
     assert.ok(value < 255, `draw ${i} produced 255, which % 0xff cannot`);
   }
   assert.equal(highest, 254, 'the whole range below the modulus must be reachable');
+});
+
+/**
+ * How far ip advances for each opcode, MEASURED rather than read off the
+ * source, because the two things that use this — the disassembler's instruction
+ * boundaries and OPERAND_BYTES — are only as good as the claim that the VM
+ * consumes operands unconditionally per opcode.
+ *
+ * The expectation is written out by hand from step() (27 entries, enum order:
+ * NOOP PUSH POP PUSHA POPA SUBROUTINE RET IN OUT JMP JMPZ JMPNZ LOAD STORE INC
+ * DEC NOT AND OR NAND NOR XOR ADD SUB MUL DIV RAND), so it is an independent
+ * artefact: the test fails if step() changes, if OPERAND_BYTES is edited, or if
+ * the two drift apart.
+ */
+const CONSUMPTION = [0, 0, 0, 2, 2, 2, 0, 1, 1, 2, 2, 2, 2, 2, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0];
+
+/**
+ * The address both operand bytes form when they are 0x11 (low) and 0x22 (high),
+ * against the genome length used below.
+ *
+ * The length is 100, and that is deliberate: 256 is a multiple of 32, 64 and 16,
+ * so with a power-of-two-ish genome length (high << 8) + low is congruent to low
+ * alone — a VM that read only one operand byte and ignored the high byte would
+ * land on the same address and this test would agree with it. 100 does not divide
+ * 256, so the two readings differ and the low-byte-first question is decidable
+ * here. The C++ leaves argument evaluation order formally unspecified (see the
+ * header of processor.ts), which is exactly why this needs a case that can tell.
+ */
+const ROM_LEN = 100;
+const TARGET = ((0x22 << 8) + 0x11) % ROM_LEN; // 21; the low byte alone would be 17.
+
+test('every opcode consumes the operand bytes OPERAND_BYTES claims, measured from ip', () => {
+  assert.equal(CONSUMPTION.length, MAX_I, 'the table must cover every opcode');
+  assert.equal(OPERAND_BYTES.length, MAX_I);
+
+  for (let op = 0; op < MAX_I; op++) {
+    assert.equal(OPERAND_BYTES[op], CONSUMPTION[op], `OPERAND_BYTES[${Instruction[op]}]`);
+
+    // genome: [op, 0x11, 0x22, 0, ...] — a single step, so nothing else executes.
+    const rom = new Uint8Array(ROM_LEN);
+    rom[0] = op;
+    rom[1] = 0x11;
+    rom[2] = 0x22;
+    const processor = new Processor(rom, 1, 16, new Rng(7));
+    processor.run();
+    const { ip } = processor.state;
+
+    // Four opcodes move ip to an address instead of advancing it, so their
+    // consumption is not directly observable — what is observable is the target,
+    // and a target of 17 can only be formed by reading BOTH operand bytes
+    // little-endian first (a single byte, or high-byte-first, gives something else).
+    // JMP and SUBROUTINE always branch; JMPZ does too here, because acc starts at 0.
+    const branchesToTarget = op === Instruction.JMP
+      || op === Instruction.SUBROUTINE
+      || op === Instruction.JMPZ;
+    if (branchesToTarget) {
+      assert.equal(ip, TARGET, `${Instruction[op]} should jump to the address the operands form`);
+      continue;
+    }
+    if (op === Instruction.JMPNZ) {
+      assert.equal(ip, 3, 'JMPNZ with acc === 0 does not branch, so it advances past both operands');
+      continue;
+    }
+    assert.equal(ip, 1 + CONSUMPTION[op], `${Instruction[op]} advanced to the wrong address`);
+  }
+});
+
+test('the not-taken branch of JMPNZ consumes both operand bytes, and the taken one lands on target', () => {
+  // INC makes acc 1, so JMPNZ branches; then 0x11/0x22 are its operands.
+  const taken = new Uint8Array(ROM_LEN);
+  taken[0] = Instruction.INC;
+  taken[1] = Instruction.JMPNZ;
+  taken[2] = 0x11;
+  taken[3] = 0x22;
+  const p1 = new Processor(taken, 2, 16, new Rng(7));
+  p1.run();
+  assert.equal(p1.state.ip, TARGET, 'taken JMPNZ must land on the address the operands form');
+
+  // The same instruction with acc still 0 is NOT taken, which is the only way to
+  // observe that its operands are consumed regardless.
+  const notTaken = new Uint8Array(ROM_LEN);
+  notTaken[0] = Instruction.NOOP;
+  notTaken[1] = Instruction.JMPNZ;
+  notTaken[2] = 0x11;
+  notTaken[3] = 0x22;
+  const p2 = new Processor(notTaken, 2, 16, new Rng(7));
+  p2.run();
+  assert.equal(p2.state.ip, 4, 'the not-taken path must still advance past the operands');
+
+  // JMPZ must read its operands even when acc !== 0 and it does not branch.
+  const jmpzNotTaken = new Uint8Array(ROM_LEN);
+  jmpzNotTaken[0] = Instruction.INC;
+  jmpzNotTaken[1] = Instruction.JMPZ;
+  jmpzNotTaken[2] = 0x11;
+  jmpzNotTaken[3] = 0x22;
+  const p4 = new Processor(jmpzNotTaken, 2, 16, new Rng(7));
+  p4.run();
+  assert.equal(p4.state.ip, 4, 'JMPZ with acc !== 0 must still consume both operands');
 });

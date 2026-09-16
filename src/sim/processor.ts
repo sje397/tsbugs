@@ -81,6 +81,36 @@ export enum Instruction {
 /** processor.h: MAX_I — opcodes are taken modulo this. */
 export const MAX_I = 27;
 
+
+/**
+ * How many operand bytes each opcode consumes, indexed by opcode ordinal.
+ *
+ * This exists so the disassembler can walk a genome without duplicating
+ * step()'s knowledge of instruction lengths — a second copy of that knowledge
+ * would be a second place for it to be wrong. It is not authoritative on its
+ * own: `test/processor.test.ts` measures the advancement ip actually makes for
+ * every one of the 27 opcodes and fails if this table disagrees, so an edit to
+ * step() that changes consumption cannot pass unnoticed.
+ *
+ * The consumption is unconditional per opcode: the branching instructions read
+ * their operands before testing anything, so there is no opcode whose length
+ * depends on the accumulator or on the stack.
+ */
+export const OPERAND_BYTES: readonly number[] = (() => {
+  const table = new Array<number>(MAX_I).fill(0);
+  for (const op of [Instruction.PUSHA, Instruction.POPA, Instruction.SUBROUTINE,
+                    Instruction.JMP, Instruction.JMPZ, Instruction.JMPNZ,
+                    Instruction.LOAD, Instruction.STORE]) {
+    table[op] = 2;
+  }
+  for (const op of [Instruction.IN, Instruction.OUT, Instruction.AND, Instruction.OR,
+                    Instruction.NAND, Instruction.NOR, Instruction.XOR, Instruction.ADD,
+                    Instruction.SUB, Instruction.MUL, Instruction.DIV]) {
+    table[op] = 1;
+  }
+  return table;
+})();
+
 export class Processor {
   private readonly ram: Uint8Array;
   private readonly stack: Uint8Array;
@@ -108,6 +138,16 @@ export class Processor {
 
   get accumulator(): number {
     return this.acc;
+  }
+
+  /**
+   * The registers, for inspection. Upstream keeps all four private with no
+   * reader at all, which is why "the machine is somewhere I cannot see" had to
+   * be inferred from behaviour there. Read-only: the UI shows the machine, it
+   * does not drive it.
+   */
+  get state(): { ip: number; sp: number; bp: number; accumulator: number } {
+    return { ip: this.ip, sp: this.sp, bp: this.bp, accumulator: this.acc };
   }
 
   get programLength(): number {
