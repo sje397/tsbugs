@@ -78,6 +78,98 @@ ctx.imageSmoothingEnabled = false;
  *  is left for the blit and the browser. */
 const BUDGET_MS = 8;
 
+// ---------------------------------------------------------------- tabs
+/**
+ * The panel is one column beside the world, and it never grew past it: four
+ * sections, one on screen at a time, with the run controls above and the stats
+ * below always visible because they are what you use while watching rather than
+ * while changing something.
+ *
+ * Three consequences worth stating, because each is a way this could be wrong:
+ *
+ *   - a hidden section has no layout, so anything that measures itself — the gene
+ *     chart's backing store, the scroll position of the code listing — must be
+ *     told when it is shown, or it measures a width of zero and stays wrong until
+ *     the next 500 ms tick (or, for the listing, forever);
+ *   - switching sections must not touch the simulation: a tab is a view of the
+ *     panel, not a mode. Nothing here reads or writes the world;
+ *   - picking a bug selects the Bug section, because a click that paused the world
+ *     and showed nothing would read as the click having failed.
+ */
+const TABS = ['params', 'bug', 'view', 'world'];
+const TAB_KEY = 'tsbugs.tab';
+let activeTab = null;
+
+function showTab(name) {
+  const next = TABS.includes(name) ? name : 'params';
+  const changed = next !== activeTab;
+  activeTab = next;
+
+  for (const button of document.querySelectorAll('#tabs button')) {
+    button.setAttribute('aria-selected', button.dataset.tab === next ? 'true' : 'false');
+  }
+  for (const section of document.querySelectorAll('#tabbody > section')) {
+    section.hidden = section.dataset.tab !== next;
+  }
+  if (changed) $('tabbody').scrollTop = 0;
+  syncScrollEdge();     // a new section is a new scroll extent
+
+  // A section that has just become visible has to catch up on what it could not
+  // measure while it was hidden — which is the variance chart, and only the chart:
+  // a hidden canvas reports `clientWidth` 0, so the columns it was asked to draw
+  // while away were skipped and have to be drawn now.
+  //
+  // The listing is deliberately not in that list. While hidden it reads
+  // `scrollTop` 0 with `clientHeight` 0, which looks like a lost scroll position
+  // and is not: unhide it and the browser puts the scroll back (measured, 1200 in
+  // and 1200 out). Scrolling it to the cursor on the way in would therefore
+  // discard a place the reader had chosen — measured, 900 out and the cursor's
+  // 35,633 in, which is the same complaint as a listing rebuilt under the cursor,
+  // arriving by a different route.
+  if (next === 'view') refreshVariance();
+
+  try {
+    storage?.setItem(TAB_KEY, next);
+  } catch {
+    // A browser that refuses storage has already been reported by the save path;
+    // forgetting which tab was open is not worth a second message.
+  }
+}
+
+/**
+ * Say when the section continues below the fold.
+ *
+ * `more` fades the bottom edge. It is not decoration: the scrollbar on macOS is an
+ * overlay that appears only while the wheel is turning, so a row cut by the bottom
+ * edge is indistinguishable from a row that was never drawn. Read from the DOM
+ * rather than tracked, because a section changes height for reasons this file
+ * cannot enumerate (a saved-world list that gains a row, a message that wraps).
+ */
+const tabbody = $('tabbody');
+
+function syncScrollEdge() {
+  tabbody.classList.toggle('more', tabbody.scrollHeight - tabbody.clientHeight - tabbody.scrollTop > 2);
+}
+
+tabbody.addEventListener('scroll', syncScrollEdge, { passive: true });
+if (typeof ResizeObserver === 'function') {
+  const observer = new ResizeObserver(syncScrollEdge);
+  for (const section of document.querySelectorAll('#tabbody > section')) observer.observe(section);
+}
+
+/** Bound the panel to the world beside it: the canvas is what sets the height. */
+function syncPanelHeight() {
+  const height = canvas.getBoundingClientRect().height;
+  if (height > 0) document.documentElement.style.setProperty('--side-h', `${Math.round(height)}px`);
+}
+
+for (const button of document.querySelectorAll('#tabs button')) {
+  button.addEventListener('click', () => showTab(button.dataset.tab));
+}
+
+addEventListener('resize', syncPanelHeight);
+addEventListener('resize', syncScrollEdge);   // the bound changed, so the extent may have
+
 // ---------------------------------------------------------------- world
 let dish;
 let off;          // offscreen canvas at world resolution
@@ -121,6 +213,7 @@ function adoptDish(next) {
   canvas.width = width * scale;
   canvas.height = height * scale;
   ctx.imageSmoothingEnabled = false;   // sizing the canvas resets the context's state
+  syncPanelHeight();                   // the panel is bounded by the world beside it
 
   const sizeOption = Array.from($('size').options).find((option) => Number(option.value) === width);
   if (sizeOption) $('size').value = sizeOption.value;
@@ -268,6 +361,33 @@ function renderParams() {
   }
 }
 
+/**
+ * What a control needs so the browser and a password manager leave it alone.
+ *
+ * Chrome reports "form field should have an id or name attribute" for a control
+ * with neither, and LastPass does not wait for a name: it decides for itself that
+ * a field is an account field and injects its icon inside it, which is what put a
+ * second control in the mutation rate box. The id and name are the browser's
+ * request answered honestly; the attributes below are each manager's own opt-out
+ * (LastPass, 1Password, Bitwarden, Dashlane), and none of them changes behaviour
+ * anywhere that is not a password manager. `autocomplete="off"` is the fourth
+ * layer and the weakest, which is why it is not the only one.
+ */
+const AUTOFILL_OPTOUT = [
+  ['autocomplete', 'off'],
+  ['data-lpignore', 'true'],
+  ['data-1p-ignore', ''],
+  ['data-bwignore', ''],
+  ['data-form-type', 'other'],
+];
+
+function nameControl(el, key, suffix = '') {
+  el.id = `param-${key}${suffix}`;
+  el.name = key;
+  for (const [attribute, value] of AUTOFILL_OPTOUT) el.setAttribute(attribute, value);
+  return el;
+}
+
 function paramRow(key, value) {
   const row = document.createElement('div');
   row.className = 'row';
@@ -296,11 +416,20 @@ function paramRow(key, value) {
     // slider is how a rate is reached and the box is what states one
     // (mutationScale.ts). Neither reads its own output back — that is what would
     // rewrite a typed 0.1234 into the slider's nearest grid point.
+    const { slider, box, note } = mutationControls(value);
     const cell = document.createElement('span');
     cell.className = 'rate';
-    cell.append(...mutationControls(value));
+    cell.append(slider, box);
     row.append(cell);
-    return row;
+
+    // The reading is on its own line, under the whole row, rather than inside the
+    // cell with the controls. In the cell it was as wide as its own sentence, and
+    // the row is `space-between`, so every change of reading dragged the slider
+    // left or right: the control moved while it was being dragged.
+    const wrap = document.createElement('div');
+    wrap.className = 'param';
+    wrap.append(row, note);
+    return wrap;
   } else {
     control = document.createElement('input');
     control.type = 'number';
@@ -311,6 +440,7 @@ function paramRow(key, value) {
     control.size = 8;
   }
 
+  nameControl(control, key);
   control.dataset.key = key;
   control.addEventListener('change', () => applyParam(key, control));
 
@@ -326,7 +456,7 @@ function paramRow(key, value) {
  * in, and it is what makes a fine adjustment visible while dragging.
  */
 function mutationControls(rate) {
-  const slider = document.createElement('input');
+  const slider = nameControl(document.createElement('input'), 'mutation', '-slider');
   slider.type = 'range';
   slider.min = '0';
   slider.max = String(SLIDER_MAX);
@@ -338,7 +468,7 @@ function mutationControls(rate) {
     ? `${rate} is not a rate this slider can hold — use the box`
     : 'drag to a rate; the box is what states one exactly';
 
-  const box = document.createElement('input');
+  const box = nameControl(document.createElement('input'), 'mutation');
   box.type = 'number';
   box.min = '0';
   box.step = 'any';
@@ -349,14 +479,20 @@ function mutationControls(rate) {
   // The number leads and is printed exactly as it stands, because this line sits
   // beside the box the reader typed into: a rate printed to four figures while the
   // world held six would be the panel disagreeing with itself.
-  const note = document.createElement('span');
+  const note = document.createElement('div');
   note.className = 'rateNote';
   note.textContent = summariseRate(rate);
+  // The line is clipped to one line so its height cannot change with its wording;
+  // the whole sentence stays reachable, since the part that gets trimmed is the
+  // explanation, never the number.
+  note.title = note.textContent;
 
   // `input` while dragging, so the reading follows the thumb; `change` once, on
-  // release, so one drag is one write to the world rather than a hundred.
+  // release, so one drag is one write to the world rather than a hundred. The
+  // title follows the text, so the sentence this line clips is still readable.
   slider.addEventListener('input', () => {
     note.textContent = summariseRate(sliderToRate(Number(slider.value)));
+    note.title = note.textContent;
   });
   slider.addEventListener('change', () => applyMutation(sliderToRate(Number(slider.value))));
 
@@ -378,7 +514,7 @@ function mutationControls(rate) {
     applyMutation(value);
   });
 
-  return [slider, box, note];
+  return { slider, box, note };
 }
 
 function applyMutation(rate) {
@@ -515,6 +651,7 @@ canvas.addEventListener('click', (event) => {
   watchedDied = null;
   pickedNear = from;
   pauseForInspection();
+  showTab('bug');   // the selection has to be visible, or the click reads as having failed
   refreshBug();
   // Repaint now rather than waiting for the next frame: while the world is paused
   // nothing else draws, so the marker would be missing from exactly the state the
@@ -724,9 +861,25 @@ function updateBugLive(bug, hash) {
   view.facts.get('sp / bp').textContent = `${state.sp} / ${state.bp}`;
   view.facts.get('accumulator').textContent = String(state.accumulator);
 
-  view.head.textContent = running
+  // Two states display as "every register is 0", both correct, and one of them is
+  // what a fresh selection usually shows. Said here rather than left to be worked
+  // out, because a column of zeroes against a bug that is plainly alive reads as
+  // the panel being broken:
+  //   - a bug that has just been born has not executed, so its machine is still at
+  //     its starting state. Age is what distinguishes it from a bug that has run
+  //     and genuinely sits at 0.
+  //   - steps per update of 0 executes nothing at all, so the machine never moves
+  //     however long the world runs. The dial accepts 0, and the reading below the
+  //     listing states it, but the registers are where it is noticed.
+  const steps = bug.processor.stepsPerUpdate;
+  const why = bug.age === 0
+    ? ` — born this tick, so it has not run yet: ip, sp and bp read 0 until an update executes it`
+    : steps === 0
+      ? ` — VM steps/update is 0, so nothing executes and the registers will not move`
+      : '';
+  view.head.textContent = (running
     ? `running — click a bug and it holds still`
-    : `paused at tick ${dish.time} — Run continues, Step advances one tick`;
+    : `paused at tick ${dish.time} — Run continues, Step advances one tick`) + why;
 
   view.note.className = bugNote === null ? 'msg' : `msg${bugNote.bad ? ' bad' : ''}`;
   view.note.textContent = bugNote === null ? '' : bugNote.text;
@@ -900,6 +1053,12 @@ const cssColor = (packed) =>
   `rgb(${packed & 0xff}, ${(packed >>> 8) & 0xff}, ${(packed >>> 16) & 0xff})`;
 
 function measureVariance() {
+  // A hidden section has zero width, and `sizeChart` would take that literally:
+  // one column of one pixel. Measuring is also the expensive half, so a chart
+  // nobody is looking at does not follow the world -- `showTab` measures once when
+  // the section appears, which is the moment the reading matters.
+  if (varCanvas.clientWidth === 0) return;
+
   const { width, height } = sizeChart();
   const genomes = [];
   dish.forEachBug((bug) => genomes.push(bug.dna.data));
@@ -931,6 +1090,7 @@ function measureVariance() {
 /** Throw a reading away, so nothing can be read from it afterwards. */
 function clearVariance(text) {
   measured = null;
+  if (varCanvas.clientWidth === 0) return;   // nothing on screen to clear
   const { width, height } = sizeChart();
   varCtx.clearRect(0, 0, width, height);
   message(text, false, 'varMsg');
@@ -1315,4 +1475,13 @@ window.__tsbugs = {
 
 buildWorld();
 refreshSaved();
+// The last section used, or Params on a first visit. Read through the same probe
+// the save path uses: a browser that refuses storage must not stop the page here.
+let startTab = 'params';
+try {
+  startTab = storage?.getItem(TAB_KEY) ?? 'params';
+} catch {
+  startTab = 'params';
+}
+showTab(startTab);
 requestAnimationFrame(frame);

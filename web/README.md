@@ -48,6 +48,7 @@ back to a commit.
 
 | Control | What it does |
 |---|---|
+| **Sections** | Four — Params, Bug, View, Worlds — so that the column does not outgrow the world beside it. The run strip (Run/Step/ticks/frame) is above them and the stats line below, both outside the scrolling body, so they stay visible whichever section is showing; the body scrolls when a section is taller than the world and a line at its foot says so when it is. Selecting a bug switches to Bug. The last section used is remembered across reloads. |
 | **Stop / Run** | Starts and stops the tick loop. |
 | **Step** | One tick, paused. |
 | **Ticks/frame** | How many simulation ticks to run per animation frame (1..64). |
@@ -55,7 +56,7 @@ back to a commit.
 | **View mode** | Six: Default, Bugs only, Bug energy, Age, DNA size, DNA value. |
 | **DNA byte** | Which genome position the DNA-value mode reads; the variance chart sets it too. |
 | **World parameters** | The parameters are editable, and every change is followed by a read-back so the panel shows what the world actually holds. |
-| **Bug inspector** | Click a bug: the world **stops** at that tick — the button reads Run and the panel says `paused at tick N — Run continues, Step advances one tick` — then its state, its registers, and its program disassembled around the instruction pointer in a listing that scrolls. Click a byte in the listing to edit it; Enter writes it into the program the bug runs and the genome its children inherit. Clicking empty ground picks the nearest bug and says how far it was. |
+| **Bug inspector** | Click a bug: the world **stops** at that tick, switches to this section — the button reads Run and the panel says `paused at tick N — Run continues, Step advances one tick` — then its state, its registers, and its program disassembled around the instruction pointer in a listing that scrolls. Click a byte in the listing to edit it; Enter writes it into the program the bug runs and the genome its children inherit. Clicking empty ground picks the nearest bug and says how far it was. Registers that read 0 are said to be readable rather than blank, and the two states that leave every register at 0 are named where they would otherwise look like a fault: a bug born this tick has not executed yet, and a steps-per-update of 0 never executes anything. |
 | **Gene variance** | Per gene position, the fraction of the population not holding the commonest byte there. Click a column to set the DNA byte. |
 | **Size / Seed / New world** | Rebuilds the world from the current seed and size. There is nothing else to configure here — the ground is flat, nothing in the simulation changes it, and there is one sensory model (DIVERGENCES.md §13). |
 | **Saved worlds** | Name, Save, Export, Import, and the stored list. The next section. |
@@ -63,6 +64,19 @@ back to a commit.
 
 The fingerprint is not a control: it is on `window.__tsbugs.hash()`, because its
 purpose is to be compared against Node rather than to be read off a screen.
+
+### Where things sit
+
+Desktop is one row: the world on the left at its own size, the panel on the right,
+and the panel is never taller than the world — 720 px against 720 px at the default
+240 × 240 world, with a body that scrolls (measured at 788 px of content in 395 px,
+with the marker line showing).
+
+A phone is one column instead, world first: at 390 × 844 the canvas measures
+370 × 370 at the top of the page, the panel below it at 370 × 1113, no horizontal
+overflow (`scrollWidth` 390 of a 390 px viewport) and no page errors. The panel loses
+its height bound and the page scrolls, so a section is never cut off; the code listing
+keeps its own scroll box, because 2,496 rows are not a page.
 
 ## Saving a world
 
@@ -151,6 +165,12 @@ bug energy and energy energy. Same inputs, same hash, or the port is not faithfu
 | A byte edit reaches both copies | on the live page the byte at `0361` held `fc`; typed `3c` and pressed Enter → `wrote 3c at 0361, was fc — into the program this bug runs and the genome its children inherit`; afterwards exactly 1 of 102 bugs held `3c` at that address, in its genome *and* in its processor RAM, the listing had re-decoded the row as `RET`, and the scroll position was kept |
 | The mutation rate is stated in the units it is thought in | the box accepted rates the slider cannot hold: `0.0001234567` reads `1 birth in 8,100 is mutated` (slider position 16), `0.02` → `1 birth in 50` (384), `0.0001` → `1 birth in 10,000` (1), `0.5` → `50% of births are mutated` (722); each read-back names what it reaches — `bugs born from now on are built with it` — and an out-of-range entry is refused in words with nothing changed |
 | The byte slots and the two-copy write are falsified | writing the unwrapped `address + 1 + i` into `decodeLinear` fails `a row names the slot each of its bytes lives in, wrapped rows included` with `slot 64 is outside the genome`, the other eight tests in that file passing; removing the genome write from `patchCode` fails `a patched byte is what a child inherits` and `… survives the snapshot that a save writes` while `… is what the machine executes` still passes, which is what separates the two copies |
+| The sections do not touch the world | switching View → Worlds → Params on a world at tick 3 left both the tick and the fingerprint identical (`4235552462`), so a section switch is a view of the world rather than a rebuild of it; and exactly one section is shown at any moment, so a control cannot be reached in a section the panel is not displaying |
+| Switching sections does not move the listing's own scroll | with the listing at 900 px of 65,168 px of rows (3,620 rows in a 298 px box), switched to View and back: still 900. The pointer's row sits at 6,153 px, far enough that a catch-up scroll to it would be unmistakable — which is how the defect was found: the show-a-tab path used to do exactly that, so it discarded the reader's place and read as the 500 ms refresh resetting the scroll bar. Hiding the list by hand and showing it again restores 1,200 of 1,200 px, so the browser was never the one losing it |
+| The chart catches up when its section is shown | a canvas in a hidden section has no width, so the variance chart drawn while View was not showing was blank; showing View draws it, at a measured `clientWidth` of 350 px |
+| Register zeros are explained where they are seen | over 8 ticks, 101 of 797 bug-samples held all four registers at 0 and all 101 were age 0 — no older bug read all-zero. Selecting one reads `paused at tick 1 … born this tick, so it has not run yet: ip, sp and bp read 0 until an update executes it`; setting VM steps/update to 0 and selecting a 5-tick-old bug born under it reads `… VM steps/update is 0, so nothing executes and the registers will not move`, and the parameter's own read-back says `bugs born from now on are built with it`, which is what the dial does |
+| The page's wiring is falsified, not just checked | four mutations, each failing exactly the test that names it and nothing else — one input losing `data-lpignore`, one section losing `hidden`, one tab button renamed, and a `$('noSuchId')` lookup added — failing `input without the autofill opt-out`, `a section can render before a tab is chosen`, `the tab bar and the sections name the same tabs`, and `app.mjs looks up ids that index.html does not define`; both files restored byte-identical (`2d34600e…`, `c2d5194a…`) |
+| The layout holds on a phone | 390 × 844: canvas 370 × 370 at the top of the page, panel 370 × 1113 below it, `scrollWidth` 390 of a 390 px viewport so nothing overflows sideways; the panel loses its height bound and the page scrolls, the listing keeps its own 298 px box (2,496 rows), tapping a bug switches to Bug and pauses at the tick the panel names, and no page errors |
 | The deployed page does the same thing | recorded on the live page at `bugs.lxg2it.com`, build `23eea75` (127,311 bytes, sha256 `96f25d81…`): `Cache-Control: no-cache`, the file served byte-identical to the build; a blank name box saved `2026-10-27 14:36:23` and a world rebuilt from nothing loaded back to the fingerprint it was saved at (tick 1360); clicking a bug stopped the world at its tick; the rate box read back `0.5 — 50% of births are mutated`; a byte written on the page appeared in that bug's genome and RAM; no page errors throughout. The naming checks recorded at build `32a1a0b` (116,105 bytes) — three saves in one second giving `13:34:06`, `… (2)` and a typed name — still hold: the suffix and the box's state are the same code |
 | The naming rules are falsified, not just followed | `test/worldName.test.ts` writes the same two instants without zero padding and shows them sorting the wrong way (`2026-10-1` above `2026-9-30`), which is the failure the padding prevents; removing the collision suffix fails three tests, and removing the padding fails two |
 | The text format round trips | re-encoding a decoded world gives the same bytes, then 200 ticks with no divergence — and `test/snapshot.test.ts` falsifies it twice (one step of stream offset, one changed genome byte) |
