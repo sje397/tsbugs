@@ -499,7 +499,7 @@ function adoptDish(next) {
   currentDish = null;
   bugView = null;
   history = [];
-  showBugInfo('click a bug in the dish to read its program');
+  showBugInfo(emptyInspectorText());
   refreshGenome();
 
   applyViewMode();
@@ -699,6 +699,29 @@ function locateWatched() {
     if (bug === watched) found = hash;
   });
   return found;
+}
+
+/**
+ * What the inspector says when no bug is selected.
+ *
+ * A world built by New World holds nothing to click: bugs are only ever created by
+ * `balance()`, which runs in the step phase, so the world is empty until it has
+ * ticked once. The prompt used to be "click a bug in the dish" in every case, which
+ * on a fresh world is advice that cannot be taken -- the dish is blank and there is
+ * no bug to click, and nothing on screen says why. So the empty state reads the
+ * world's own counters and names the state instead of asking for an impossible
+ * action.
+ *
+ * The tick-0 branch and the later one are separate sentences on purpose: at tick 0
+ * nothing has been *done*, while a world that has ticked and holds nothing has been
+ * through `balance()` and is short of the energy it needs to inject (the loop is
+ * `bugEnergy < minBugEnergy && remainingEnergy >= maxEnergy`), which is a different
+ * thing to be told.
+ */
+function emptyInspectorText() {
+  if (dish.population > 0) return 'click a bug in the dish to read its program';
+  if (dish.time === 0) return 'the world holds no bugs yet -- its first tick fills it, so press Run or Step';
+  return `the world holds no bugs at tick ${dish.time} -- balance() refills it while it is short of energy, so press Run or Step`;
 }
 
 /** Replaces the panel with one line of text -- no bug, a dead bug, a missed click. */

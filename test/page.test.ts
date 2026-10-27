@@ -104,3 +104,30 @@ test('every input has an id, and every typed one refuses autofill', () => {
     if (typed.has(type)) assert.match(tag, /data-lpignore/, `input without the autofill opt-out: ${tag}`);
   }
 });
+
+test('the empty inspector asks for a click only when there is something to click', () => {
+  // A world from New World holds no bugs: they are created by `balance()`, which
+  // runs in the step phase, so the dish is blank until the world has ticked. The
+  // prompt it landed with -- "click a bug in the dish" -- was advice that could not
+  // be taken, and nothing on screen said why, so the text is now chosen from the
+  // world's own counters.
+  //
+  // This is a structural check, not a behavioural one: `app.mjs` runs in a browser
+  // and cannot be imported here. What it pins is that the choice still EXISTS --
+  // the realistic regression is someone collapsing three branches back into the one
+  // unconditional prompt, which no other test in this file would notice.
+  const fn = /function emptyInspectorText\(\) \{([\s\S]*?)\n\}/.exec(js);
+  assert.ok(fn !== null, 'app.mjs should choose the empty inspector text from the world');
+  const body = fn[1];
+
+  assert.match(body, /dish\.population/, 'the text should depend on whether the world holds bugs');
+  assert.match(body, /dish\.time/, 'and on whether the world has ticked, which is why it is empty');
+
+  // The prompt that exists is the one that says there is something to click, and it
+  // must be the guarded branch rather than the fallback: a version whose last line
+  // was the click prompt would tell a reader to click an empty dish.
+  const lines = body.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  assert.match(lines[0], /dish\.population > 0/, 'the click prompt should be the population>0 case');
+  assert.match(lines[0], /click a bug in the dish/, 'and that is the string it should return');
+  assert.match(lines[lines.length - 1], /return /, 'the last case must also return a sentence, not fall through');
+});
