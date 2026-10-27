@@ -23,14 +23,17 @@ import {
   base64ToBytes,
   bytesToBase64,
   decodeWorld,
+  decodeWorldFile,
   deleteWorld,
   encodeWorld,
+  encodeWorldFile,
   isValidWorldName,
   listWorlds,
   MAX_WORLD_NAME,
   loadWorld,
   readWorldText,
   WORLD_FORMAT,
+  WorldSaveError,
   saveWorld,
   storageUsed,
   WORLD_KEY_PREFIX,
@@ -165,6 +168,53 @@ test('the decoder refuses a bug whose machine could not exist', () => {
   );
 });
 
+// --------------------------------------------------------------------- files
+
+test('a file round trips, and carries the world\'s name with it', () => {
+  const dish = world(11, 40);
+  const before = dish.snapshot();
+  const text = encodeWorldFile('two niches', before, new Date('2026-10-28T02:00:00Z'));
+
+  const back = decodeWorldFile(text);
+  assert.equal(back.name, 'two niches');
+  // Restored through the model, not just compared as JSON: a world that decodes
+  // and cannot be restored is a file that opens and then fails.
+  const restored = PetriDish.restore(back.snapshot);
+  assert.equal(restored.time, dish.time);
+  assert.equal(restored.population, dish.population);
+  assert.equal(encodeWorld(restored.snapshot()), encodeWorld(before));
+});
+
+test('a bare world file -- what the first Export wrote -- still opens, with no name', () => {
+  // The compatibility direction that matters: files already downloaded must keep
+  // opening. They carry no name, so the caller keeps whatever it had rather than
+  // inheriting an invented one.
+  const text = encodeWorld(world().snapshot());
+  const back = decodeWorldFile(text);
+  assert.equal(back.name, null);
+  assert.ok(back.snapshot.cells.length > 0);
+});
+
+test('a foreign file is refused by name, not by an exception from the parser', () => {
+  assert.throws(() => decodeWorldFile('{oh no'), /not JSON/);
+  assert.throws(() => decodeWorldFile('[]'), /expected a JSON object/);
+  assert.throws(() => decodeWorldFile('{"hello":1}'), /format undefined/);
+  assert.throws(
+    () => decodeWorldFile('{"format":"tsbugs-world","version":1,"world":42}'),
+    /file.world is not a world string/,
+  );
+  assert.throws(
+    () => decodeWorldFile('{"format":"tsbugs-world","version":1,"name":7,"world":"{}"}'),
+    /file.name is not a string/,
+  );
+  // An envelope whose world is broken fails in the world's own words, so the
+  // sentence names the field that is wrong rather than the envelope that holds it.
+  assert.throws(
+    () => decodeWorldFile('{"format":"tsbugs-world","version":1,"world":"{\\"format\\":\\"nope\\"}"}'),
+    /not a saved world \(format nope\)/,
+  );
+});
+
 // ------------------------------------------------------------------- storage
 
 test('a saved world lists, reads back, and restores', () => {
@@ -250,7 +300,7 @@ test('a full store fails loudly, in words, and keeps the world it was replacing'
   const before = listWorlds(storage)[0];
   assert.equal(before.name, 'kept');
 
-  assert.throws(() => saveWorld(storage, 'too big', snapshot), /No room left/);
+  assert.throws(() => saveWorld(storage, 'too big', snapshot), /No room in this browser's storage/);
   assert.equal(listWorlds(storage).length, 1, 'the refused world should not be half-written');
 
   // Replacing an existing name with a LARGER world must also fail without
@@ -263,10 +313,76 @@ test('a full store fails loudly, in words, and keeps the world it was replacing'
     encodeWorld(larger).length > encodeWorld(snapshot).length,
     'the replacement world must be bigger than the one it replaces',
   );
-  assert.throws(() => saveWorld(storage, 'kept', larger), /No room left/);
+  assert.throws(() => saveWorld(storage, 'kept', larger), /No room in this browser's storage/);
   const after = listWorlds(storage)[0];
   assert.equal(after.storedBytes, before.storedBytes);
   assert.equal(loadWorld(storage, 'kept')?.counters.population, before.population);
+});
+
+/** A store that refuses every write with one given error, and holds nothing. */
+function refusingStorage(error: Error): WorldStorage {
+  return {
+    length: 0,
+    key: () => null,
+    getItem: () => null,
+    setItem: () => {
+      throw error;
+    },
+    removeItem: () => {},
+  };
+}
+
+function failureOf(name: string, snapshot: ReturnType<PetriDish['snapshot']>, error: Error): WorldSaveError {
+  let caught: unknown = null;
+  try {
+    saveWorld(refusingStorage(error), name, snapshot);
+  } catch (thrown) {
+    caught = thrown;
+  }
+  assert.ok(caught instanceof WorldSaveError, `expected a WorldSaveError, got ${String(caught)}`);
+  return caught;
+}
+
+test('a refused write is only called a full store when the platform says so', () => {
+  // Every setItem failure names the object it was called on -- "Failed to execute
+  // 'setItem' on 'Storage': ..." -- so a check that matched the word "Storage"
+  // reported a security refusal, a bad key and a full store all as "no room", and
+  // told the reader to delete a world that was not the problem. The name is the
+  // only signal the platform gives, so it is the only one believed.
+  const insecure = Object.assign(
+    new Error("Failed to execute 'setItem' on 'Storage': The operation is insecure."),
+    { name: 'SecurityError' },
+  );
+  const failure = failureOf('w', world().snapshot(), insecure);
+  assert.equal(failure.reason, 'other');
+  assert.match(failure.message, /Could not save "w": SecurityError/);
+  assert.doesNotMatch(failure.message, /No room|Delete a world/);
+  assert.equal(failure.detail, `SecurityError: ${insecure.message}`);
+
+  // And the positive control: the same storage, a genuine quota error, is called a
+  // full store. Without this the test above would pass on a check that never fires.
+  const quota = Object.assign(new Error('The quota has been exceeded.'), { name: 'QuotaExceededError' });
+  assert.equal(failureOf('w', world().snapshot(), quota).reason, 'quota');
+});
+
+test('an empty store that still refuses says so, because deleting cannot help', () => {
+  // Browser storage holds 5,242,875 characters on this origin and every world
+  // measured encodes to under 1.4 M, so an empty store refusing is never about the
+  // size of this world: it is storage being unavailable, or another key on the
+  // origin holding the budget. "Delete a world and try again" is then advice that
+  // cannot work, and it is what the old message said regardless of what was stored.
+  const snapshot = world().snapshot();
+  const alone = encodeWorld(snapshot).length;
+  const quota = Object.assign(new Error('The quota has been exceeded.'), { name: 'QuotaExceededError' });
+
+  const failure = failureOf('huge', snapshot, quota);
+  assert.equal(failure.usedChars, 0, 'the fixture must hold nothing, or the message is about another case');
+  assert.ok(failure.worldChars >= alone, 'the reported size must be the world, not the metadata alone');
+  assert.match(failure.message, /no saved world is taking up room/);
+  assert.match(failure.message, /deleting one cannot help/);
+  assert.match(failure.message, /Export writes a file/);
+  // and it must not send the reader to delete something, which is the old defect
+  assert.doesNotMatch(failure.message, /Delete a world/);
 });
 
 test('deleting reports whether there was anything to delete', () => {

@@ -34,6 +34,21 @@
  *    recomputed by a restore, because a saved copy of a rendering rule is a second
  *    copy of it.
  *
+ * SIZES, MEASURED, BECAUSE THE STORE'S LIMIT IS THE POINT
+ *
+ * A world is sized by how many bugs are alive, at roughly 8.5-9 kB of base64 genome
+ * each, and that is bounded by the energy field rather than by the grid: every
+ * preset at 240x240 over 3000 ticks holds 79-163 bugs and encodes to 0.84-1.35 M
+ * characters, and a 480x480 world is no bigger (1.15-1.23 M) because the extra
+ * cells hold energy, not bugs. Browser storage is 5,242,875 characters on this
+ * origin — measured by growing one key until the write was refused, not quoted from
+ * a spec — so the store holds about four worlds.
+ *
+ * Hence the shape of the failure: a save fails because of the worlds already saved,
+ * which is a thing the reader can act on, and a file is the copy with no ceiling.
+ * `describeWriteFailure` handles the one case where that reasoning breaks, a store
+ * that refuses while holding nothing.
+ *
  * What is NOT here: a download or an upload. A world is handed out and taken back
  * as text by the caller, so this stays testable without a DOM.
  */
@@ -54,6 +69,21 @@ export const WORLD_KEY_PREFIX = 'tsbugs.world.';
 
 /** Long enough to say something, short enough that the list still reads. */
 export const MAX_WORLD_NAME = 40;
+
+/**
+ * The extension a world file gets.
+ *
+ * Not `.json`, which says what the bytes are and not what they are for: a person
+ * looking at a folder of downloads should be able to tell a world from a data
+ * export. The contents stay JSON, so a wrong file still fails with a sentence
+ * rather than a parse error nobody can read.
+ */
+export const WORLD_FILE_EXTENSION = 'bugs';
+
+/** A text size for a message. Characters, because that is what storage counts. */
+export function textSize(chars: number): string {
+  return chars >= 1024 * 1024 ? `${(chars / 1024 / 1024).toFixed(1)} MB` : `${Math.round(chars / 1024)} KB`;
+}
 
 /** The slice of `Storage` this needs — so a test can stand in for it. */
 export interface WorldStorage {
@@ -500,6 +530,72 @@ export function decodeWorld(text: string): WorldSnapshot {
   };
 }
 
+// -------------------------------------------------------------------- files
+
+/**
+ * A world as a file: the same envelope storage keeps, so a file carries its own
+ * name and a listing can be built from one without guessing.
+ *
+ * The envelope's inner `world` stays a JSON *string* rather than becoming an
+ * object. That looks like double encoding and is deliberate — it is what lets a
+ * listing read the metadata of ten files without parsing ten worlds — and it is
+ * one format rather than two, so the text in storage and the text in a file are
+ * the same text.
+ */
+export function encodeWorldFile(name: string, snapshot: WorldSnapshot, savedAt: Date = new Date()): string {
+  return JSON.stringify(makeEnvelope(name, snapshot, savedAt));
+}
+
+/**
+ * A file back into a name and a snapshot.
+ *
+ * Two shapes are accepted because two exist in the world: the envelope this build
+ * writes, and the bare world the first Export wrote before files carried a name.
+ * A bare world's name is null — the caller decides what to call it, and the honest
+ * answer is "whatever it was already going to".
+ */
+export function decodeWorldFile(text: string): { name: string | null; snapshot: WorldSnapshot } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`not a tsbugs world file: not JSON (${(error as Error).message})`);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('not a tsbugs world file: expected a JSON object');
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.format !== WORLD_FORMAT) {
+    throw new Error(`not a tsbugs world file (format ${String(record.format)})`);
+  }
+
+  // A bare world is what the first Export wrote, so a file without an envelope is
+  // read as one world rather than refused. Every failure below names the file,
+  // because this is the only sentence the reader gets: the message goes straight to
+  // the panel, and a bare "not JSON" leaves them without knowing what was rejected.
+  if ('world' in record) {
+    if (typeof record.world !== 'string' || record.world === '') {
+      throw new Error('not a tsbugs world file: file.world is not a world string');
+    }
+    const name = 'name' in record ? record.name : null;
+    if (name !== null && typeof name !== 'string') {
+      throw new Error('not a tsbugs world file: file.name is not a string');
+    }
+    let snapshot;
+    try {
+      snapshot = decodeWorld(record.world);
+    } catch (error) {
+      throw new Error(`not a tsbugs world file: ${(error as Error).message}`);
+    }
+    return { name: typeof name === 'string' && name !== '' ? name : null, snapshot };
+  }
+  try {
+    return { name: null, snapshot: decodeWorld(text) };
+  } catch (error) {
+    throw new Error(`not a tsbugs world file: ${(error as Error).message}`);
+  }
+}
+
 // ------------------------------------------------------------------ storage
 
 /** Names are keys, so the characters that matter are the ones that make a name unusable. */
@@ -508,25 +604,92 @@ export function isValidWorldName(name: string): boolean {
 }
 
 /**
+ * A refused save, with the two facts that make it actionable kept apart: whether
+ * the browser said the store was full, and how big this world was against how much
+ * was already held.
+ *
+ * The caller needs the first to decide whether to hand the world over as a file —
+ * a full store is the one write failure with a way out — and cannot get it from
+ * the message, which is why it is a field.
+ */
+export class WorldSaveError extends Error {
+  readonly reason: 'quota' | 'other';
+  readonly worldChars: number;
+  readonly usedChars: number;
+  readonly detail: string;
+
+  constructor(reason: 'quota' | 'other', message: string, worldChars: number, usedChars: number, detail: string) {
+    super(message);
+    this.name = 'WorldSaveError';
+    this.reason = reason;
+    this.worldChars = worldChars;
+    this.usedChars = usedChars;
+    this.detail = detail;
+  }
+}
+
+/**
+ * Did the platform refuse because the store is full?
+ *
+ * By NAME, never by reading the message. Every `setItem` failure names the object
+ * it was called on — "Failed to execute 'setItem' on 'Storage': ..." — so a match
+ * on the word "Storage" is true of a security refusal, a wrong-shaped key and a
+ * full store alike. The old check here did exactly that (`/quota|exceeded|storage/i`),
+ * which meant any refused write was reported as a full store and told the reader
+ * to delete a world that was not the problem. `QuotaExceededError` (and its
+ * legacy numeric code 22, which is the same DOMException) is the only signal the
+ * platform gives for this, so it is the only one relied on.
+ */
+function isQuotaFailure(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { name, code } = error as { name?: unknown; code?: unknown };
+  return name === 'QuotaExceededError' || code === 22;
+}
+
+/**
  * Why a save failed, in a sentence a person can act on.
  *
- * Quota is the interesting one: a world is half a megabyte, browser storage is
- * about five, and the failure arrives as an exception from the platform whose
- * message is either a DOMException name or nothing useful at all. Saving silently
- * failing, or appearing to work, is the one outcome to rule out.
+ * The empty-store case is called out separately because it is the one where the
+ * obvious remedy is wrong: if nothing of ours is stored and the write is still
+ * refused for quota, then freeing a world cannot make room, and the cause is
+ * somewhere the reader has to look rather than delete — storage blocked for the
+ * site, a private window, or another key on the same origin holding the budget.
  */
-function describeWriteFailure(error: unknown, name: string): string {
+function describeWriteFailure(
+  error: unknown, worldName: string, worldChars: number, usedChars: number,
+): string {
   const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-  const quota = /quota|exceeded|storage/i.test(detail);
-  if (quota) {
+  if (!isQuotaFailure(error)) return `Could not save "${worldName}": ${detail}`;
+
+  const world = textSize(worldChars);
+  if (usedChars === 0) {
     return (
-      `No room left in this browser's storage for "${name}". A populated world costs ` +
-      'most of a megabyte and the whole store is a few megabytes — delete a world and ' +
-      'try again. ' +
-      `(${detail})`
+      `No room in this browser's storage for "${worldName}": the world is ${world} and no saved ` +
+      'world is taking up room, so deleting one cannot help. This browser is either not storing ' +
+      'anything for this site (a private window, or storage turned off) or something else on it ' +
+      'has filled the space. Export writes a file.'
     );
   }
-  return `Could not save "${name}": ${detail}`;
+  return (
+    `No room in this browser's storage for "${worldName}": the world is ${world} and ` +
+    `${textSize(usedChars)} is already saved. Delete a world, or Export a file.`
+  );
+}
+
+/** The envelope: what storage keeps, and what a file carries. */
+function makeEnvelope(worldName: string, snapshot: WorldSnapshot, savedAt: Date): WorldEnvelope {
+  return {
+    format: WORLD_FORMAT,
+    name: worldName,
+    savedAt: savedAt.toISOString(),
+    meta: {
+      tick: snapshot.counters.time,
+      population: snapshot.counters.population,
+      width: snapshot.params.width,
+      height: snapshot.params.height,
+    },
+    world: encodeWorld(snapshot),
+  };
 }
 
 /**
@@ -541,23 +704,21 @@ export function saveWorld(storage: WorldStorage, name: string, snapshot: WorldSn
   if (!isValidWorldName(name)) {
     throw new Error(`"${name}" is not a name this store accepts (1..${MAX_WORLD_NAME} characters)`);
   }
-  const envelope: WorldEnvelope = {
-    format: WORLD_FORMAT,
-    name,
-    savedAt: new Date().toISOString(),
-    meta: {
-      tick: snapshot.counters.time,
-      population: snapshot.counters.population,
-      width: snapshot.params.width,
-      height: snapshot.params.height,
-    },
-    world: encodeWorld(snapshot),
-  };
+  const envelope = makeEnvelope(name, snapshot, new Date());
   const text = JSON.stringify(envelope);
   try {
     storage.setItem(WORLD_KEY_PREFIX + name, text);
   } catch (error) {
-    throw new Error(describeWriteFailure(error, name));
+    // Read what is held once, so a message and the error's own fields cannot describe
+    // two different states of the store.
+    const usedChars = storageUsed(storage);
+    throw new WorldSaveError(
+      isQuotaFailure(error) ? 'quota' : 'other',
+      describeWriteFailure(error, name, text.length, usedChars),
+      text.length,
+      usedChars,
+      error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    );
   }
   return {
     name,

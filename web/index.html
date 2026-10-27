@@ -571,9 +571,12 @@
             <button id="import">Import</button>
           </span></div>
           <!-- Hidden rather than styled: the browser's own file picker is the import UI. -->
-          <input id="importFile" type="file" accept=".json,application/json" hidden>
+          <!-- .bugs is what this build writes; .json is what the first Export wrote, so both open. -->
+          <input id="importFile" type="file" accept=".bugs,.json,application/json" hidden>
           <div id="savedList"></div>
-          <div id="savedMsg" class="msg">saved worlds live in this browser's storage</div>
+          <!-- Save is the convenience and a file is the copy that travels: this browser holds
+               about five megabytes of text, which is a handful of worlds. -->
+          <div id="savedMsg" class="msg">Save keeps a world in this browser; Export writes a file</div>
         </fieldset>
       </section>
 

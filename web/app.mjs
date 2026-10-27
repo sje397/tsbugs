@@ -40,8 +40,8 @@ import { PALETTE, colourName, cssFor, onColour } from '../dist/src/ui/palette.js
 import { Rng } from '../dist/src/sim/rng.js';
 import { fingerprint } from '../dist/src/sim/fingerprint.js';
 import {
-  WORLD_KEY_PREFIX, bytesToBase64, decodeWorld, deleteWorld, encodeWorld, isValidWorldName,
-  listWorlds, loadWorld, saveWorld, storageUsed,
+  WORLD_FILE_EXTENSION, WORLD_KEY_PREFIX, WorldSaveError, bytesToBase64, decodeWorldFile, deleteWorld,
+  encodeWorldFile, isValidWorldName, listWorlds, loadWorld, saveWorld, storageUsed, textSize,
 } from '../dist/src/ui/worldStore.js';
 import { defaultWorldName, uniqueWorldName } from '../dist/src/ui/worldName.js';
 import { blitViewCol } from '../dist/src/ui/blit.js';
@@ -1704,10 +1704,6 @@ function savedMessage(text, bad = false) {
   message(text, bad, 'savedMsg');
 }
 
-function kilobytes(chars) {
-  return chars >= 1024 * 1024 ? `${(chars / 1024 / 1024).toFixed(1)} MB` : `${Math.round(chars / 1024)} KB`;
-}
-
 function slug(text) {
   return text.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'world';
 }
@@ -1750,11 +1746,21 @@ function saveCurrent() {
     // next Save silently replaces the entry it just made, and the date-and-time
     // naming would produce exactly one entry per session. A typed name is still in
     // the box, so re-saving a named world stays one click.
-    savedMessage(`saved "${name}" -- tick ${saved.tick}, ${saved.population} bugs, ${kilobytes(saved.storedBytes)}`);
+    savedMessage(`saved "${name}" -- tick ${saved.tick}, ${saved.population} bugs, ${textSize(saved.storedBytes)}`);
     refreshSaved();
     return saved;
   } catch (error) {
-    savedMessage(error.message, true);
+    // A store with no room is not a dead end: the world in hand is worth more than
+    // the place it was going, and a file has no ceiling to hit. This is also the
+    // case the old copy got wrong -- "delete a world and try again" said even when
+    // nothing was saved and the cause was storage being unavailable -- so the
+    // refusal hands over the file instead of describing a remedy that cannot work.
+    if (error instanceof WorldSaveError && error.reason === 'quota') {
+      const { filename, chars } = writeWorldFile(name);
+      savedMessage(`${error.message} Wrote ${filename} (${textSize(chars)}) instead.`, true);
+    } else {
+      savedMessage(error.message, true);
+    }
     return null;
   }
 }
@@ -1788,10 +1794,16 @@ function removeSaved(name) {
   return gone;
 }
 
-/** The world as a file: the same text the store keeps inside, so the two agree. */
-function exportCurrent() {
-  const text = encodeWorld(dish.snapshot());
-  const filename = `tsbugs-${slug(worldName())}-tick${dish.time}.json`;
+/**
+ * Write a world out as a file, and say what was written.
+ *
+ * A file is the durable copy: it carries the world's own name, so opening it later
+ * does not leave someone guessing what to call it, and it has no size ceiling --
+ * where browser storage holds 5 MiB, about four worlds.
+ */
+function writeWorldFile(name) {
+  const text = encodeWorldFile(name, dish.snapshot());
+  const filename = `tsbugs-${slug(name)}-tick${dish.time}.${WORLD_FILE_EXTENSION}`;
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
   const a = document.createElement('a');
   a.href = url;
@@ -1802,20 +1814,32 @@ function exportCurrent() {
   // Not revoked immediately: some browsers have not finished reading the blob when
   // click() returns, and a revoked URL downloads a zero-byte file.
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
-  savedMessage(`exported ${filename} -- ${kilobytes(text.length)}`);
+  return { filename, chars: text.length };
 }
 
+function exportCurrent() {
+  const { filename, chars } = writeWorldFile(worldName());
+  savedMessage(`exported ${filename} -- ${textSize(chars)}`);
+}
+
+/**
+ * Open a file: the envelope this build writes, or the bare world the first Export
+ * wrote. The name inside a file is the world's own, so it goes back in the box --
+ * and it is not an overwrite prompt waiting to happen, because Save asks before it
+ * replaces anything.
+ */
 function importText(text) {
   try {
-    const snapshot = decodeWorld(text);
+    const { name, snapshot } = decodeWorldFile(text);
     stopRunning();
     adoptDish(PetriDish.restore(snapshot));
-    $('saveName').value = '';
-    message(`imported a ${dish.width}x${dish.height} world`, false, 'banner');
-    savedMessage(`imported -- tick ${dish.time}, ${dish.population} bugs`);
+    $('saveName').value = name !== null && isValidWorldName(name) ? name : '';
+    const called = name === null ? '' : ` "${name}"`;
+    message(`imported${called}: a ${dish.width}x${dish.height} world`, false, 'banner');
+    savedMessage(`imported${called} -- tick ${dish.time}, ${dish.population} bugs`);
     return true;
   } catch (error) {
-    savedMessage(`not a tsbugs world: ${error.message}`, true);
+    savedMessage(error.message, true);
     return false;
   }
 }
@@ -1841,7 +1865,7 @@ function refreshSaved() {
       // "not a saved world", "incomplete: ..."); a prefix here would diagnose twice.
       entry.problem !== null
         ? entry.problem
-        : `tick ${entry.tick} · ${entry.population} bugs · ${kilobytes(entry.storedBytes)}`);
+        : `tick ${entry.tick} · ${entry.population} bugs · ${textSize(entry.storedBytes)}`);
     what.append(name, detail);
     row.append(what);
 
@@ -1861,7 +1885,7 @@ function refreshSaved() {
   if (entries.length === 0) {
     savedMessage('nothing saved yet -- Save keeps a world in this browser, Export gives you a file');
   } else {
-    savedMessage(`${entries.length} saved, ${kilobytes(storageUsed(storage))} of this browser's storage`);
+    savedMessage(`${entries.length} saved, ${textSize(storageUsed(storage))} of this browser's storage`);
   }
 }
 
@@ -1940,7 +1964,7 @@ window.__tsbugs = {
   /** Re-render the list. Exposed because a probe that writes a corrupt entry
    *  needs the panel's own view of it, and the buttons are what a person sees. */
   refreshSaved,
-  exportText: () => encodeWorld(dish.snapshot()),
+  exportText: () => encodeWorldFile(worldName(), dish.snapshot()),
   importText(text) { return importText(text) ? this.hash() : null; },
   /** Shared with Node, so a browser run and a headless run are comparable. */
   hash: () => fingerprint(dish),
