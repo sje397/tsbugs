@@ -421,13 +421,46 @@ let ups = 0;
 let lastTime = 0;
 let lastMs = performance.now();
 
+/**
+ * The poison count the form is asking for, or null if it is asking for nothing
+ * usable.
+ *
+ * Refused rather than clamped or coerced, because the dish's scatter treats a
+ * count it cannot use as zero: `while (count > 0)` is false for NaN, so a typo
+ * would quietly deal a world with no poison in it and say nothing. A form that
+ * silently builds something other than what it says is the defect this whole
+ * section is meant to be free of.
+ */
+function poisonCells() {
+  const raw = String($('poisonCells').value).trim();
+  const value = Number(raw);
+  if (raw === '' || !Number.isFinite(value) || value < 0) return null;
+  return Math.trunc(value);
+}
+
+/**
+ * Build a world from the New World form: the preset, then the fields the form
+ * owns outright, then the size and the seed.
+ *
+ * Poison was offered by the params panel until it moved here. The panel is a view
+ * of a running world, so for a field the world cannot adopt it could only report
+ * `ignored` -- "rebuild to apply" -- and that was not true: this function rebuilt
+ * from the preset, so the edit was dropped and the panel's promise was a lie. It
+ * is a field of the form, so it is a control on the form.
+ */
 function buildWorld() {
   const size = Number($('size').value);
   const seed = Number($('seed').value);
   const preset = presetById($('preset').value) ?? presetById(DEFAULT_PRESET_ID);
-  const params = { ...presetParams(preset.id), width: size, height: size };
+  const poison = poisonCells();
+  if (poison === null) {
+    message('poison cells needs a whole number of 0 or more -- the world was not rebuilt', true);
+    return;
+  }
+
+  const params = { ...presetParams(preset.id), poison, width: size, height: size };
   adoptDish(new PetriDish(params, new Rng(seed)));
-  message(`${preset.name}: ${size}x${size}, seed ${seed}`);
+  message(`${preset.name}: ${size}x${size}, seed ${seed}, poison ${poison}`);
 }
 
 /**
@@ -451,6 +484,10 @@ function adoptDish(next) {
 
   const sizeOption = Array.from($('size').options).find((option) => Number(option.value) === width);
   if (sizeOption) $('size').value = sizeOption.value;
+  // The form describes the world on screen, so a loaded or imported world writes
+  // its own poison count back into it -- otherwise the next New World would deal
+  // the previous world's number while the form said nothing about it.
+  $('poisonCells').value = String(dish.worldParams.poison);
 
   worldSerial++;      // everything measured so far describes the previous world
   view = { zoom: 0, ox: 0, oy: 0 };   // a new world is shown whole
@@ -583,9 +620,17 @@ function renderPresets() {
   }
   select.value = DEFAULT_PRESET_ID;
   $('presetNote').textContent = presetById(DEFAULT_PRESET_ID).description;
-  select.addEventListener('change', () => {
-    $('presetNote').textContent = (presetById(select.value) ?? presetById(DEFAULT_PRESET_ID)).description;
-  });
+  // Choosing a preset fills the form, which is what "a seed for the New World
+  // form" means: the poison count is part of the preset, so it has to show. That
+  // is also what makes the two controls one control -- the field overrides the
+  // preset for the next build, and picking another preset overrides the field.
+  const fillFromPreset = () => {
+    const preset = presetById(select.value) ?? presetById(DEFAULT_PRESET_ID);
+    $('presetNote').textContent = preset.description;
+    $('poisonCells').value = String(presetParams(preset.id).poison);
+  };
+  fillFromPreset();
+  select.addEventListener('change', fillFromPreset);
 }
 
 // ---------------------------------------------------------------- inspector

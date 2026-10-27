@@ -43,12 +43,20 @@ export const GROUP_TITLES: Readonly<Record<ParamGroup, string>> = {
 
 /**
  * Fields the panel does not offer, because another control owns them: the world
- * panel's size select sets both. One control per field.
+ * panel's New World form sets all three. One control per field.
+ *
+ * `poison` is there for the same reason the size is. Both are dealt when the world
+ * is built, and this panel is a view of a running world: it can offer those fields
+ * a value the running world will not adopt, and the honest report is `ignored`,
+ * which reads on screen as "rebuild to apply". That reading was false while the
+ * field lived here — New World rebuilt from the preset and dropped the edit — so
+ * the field moved to the form that actually deals it, beside the size and the seed.
+ * See `REBUILD_ONLY` in dish.ts for the model's half of the same list.
  *
  * A field that is neither offered nor listed here is a field the page has
  * silently stopped showing, which `missingFields` reports and a test fails on.
  */
-export const NO_PANEL_CONTROL: ReadonlySet<string> = new Set(['width', 'height']);
+export const NO_PANEL_CONTROL: ReadonlySet<string> = new Set(['width', 'height', 'poison']);
 
 export const FIELD_LABELS: Readonly<Record<string, string>> = {
   minData: 'min DNA size',

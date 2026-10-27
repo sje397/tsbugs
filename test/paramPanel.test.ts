@@ -45,8 +45,8 @@ test('every parameter is offered, or deliberately left to another control', () =
   assert.deepEqual(missing, [], 'a parameter with no control and no exclusion is one the page silently dropped');
   assert.deepEqual(
     [...NO_PANEL_CONTROL],
-    ['width', 'height'],
-    'the exclusions are the size select; adding another is a decision that should have to be written here',
+    ['width', 'height', 'poison'],
+    'the exclusions are the New World form (size, poison); adding another is a decision that should have to be written here',
   );
 
   const all = Object.keys(DEFAULT_PARAMS);
