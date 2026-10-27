@@ -41,10 +41,10 @@ export const hex4 = (n: number): string => n.toString(16).padStart(4, '0');
  * Every byte of a row, with the genome slot it occupies — the first part of the
  * line, and the part an editor has to address.
  *
- * The slot comes from the row rather than from `address + n` because a wrapped
- * instruction reads its operands from the start of the genome: there the slots go
- * backwards, and an edit placed at the arithmetic address would land in a
- * different instruction's code.
+ * The slot is carried on the row because a wrapped instruction reads its operands
+ * from the start of the genome: its slots there run backwards, so the same slot
+ * computed without the wrap is an address past the end of the genome rather than a
+ * wrong one that looks right.
  */
 export function rowBytes(ins: DecodedInstruction): Array<{ address: number; hex: string }> {
   return [ins.byte, ...ins.operandBytes].map((value, i) => ({

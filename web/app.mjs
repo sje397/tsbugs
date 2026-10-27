@@ -678,9 +678,10 @@ function bugRow(ins) {
   row.append(cursor, document.createTextNode(` ${hex4(ins.address)}  `));
 
   // Every byte is its own span, because every byte is its own edit. The slot comes
-  // from the decode rather than from the row's address: a wrapped instruction reads
-  // its operands from the start of the genome, and an edit placed by arithmetic
-  // would land in a different instruction's code.
+  // from the decode rather than being computed from the row's address, because a
+  // wrapped instruction reads its operands from the start of the genome: its slots
+  // there run backwards, and the same slot computed without the wrap is past the
+  // end of the genome.
   const bytes = rowBytes(ins);
   bytes.forEach((byte, i) => {
     if (i > 0) row.append(document.createTextNode(' '));
