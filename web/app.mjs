@@ -184,14 +184,24 @@ function draw() {
 }
 
 /**
- * Ring the bug under inspection, and box the cell that was clicked when the two
- * differ.
+ * Ring the bug under inspection, box the cell that was clicked when the two
+ * differ, and mark the cell the sense grid was sampled at.
  *
  * The ring is redrawn every frame against the bug's current cell, so the panel's
  * subject stays identifiable as it moves -- and at the fitted zoom on a 480-cell
  * world a bug is one pixel, which is why the ring is a fixed minimum radius in
  * screen space rather than a multiple of the cell: a ring that shrinks with the
  * cell disappears exactly when the world is most crowded.
+ *
+ * The third mark exists because the grid and the ring describe different cells.
+ * A machine samples its 3x3 window as it runs and then moves, so by the time it
+ * can be inspected the grid's centre is one step behind the cell the ring is on:
+ * the panel is a picture of a neighbourhood, and the reader is looking at a
+ * different neighbourhood. Nothing said so on the canvas, so food a row below the
+ * bug could be absent from the grid while the cell above it appeared -- which
+ * reads as the direction being wrong rather than the position. The caption in the
+ * panel names the cell in words; this marks it in the picture, and the two views
+ * then describe one place.
  */
 function drawInspectorMarker(l, dpr) {
   ctx.lineWidth = Math.max(1, Math.round(dpr));
@@ -224,6 +234,26 @@ function drawInspectorMarker(l, dpr) {
   ctx.beginPath();
   ctx.arc(toDevice(at.x, dpr), toDevice(at.y, dpr), toDevice(r, dpr), 0, Math.PI * 2);
   ctx.stroke();
+
+  // Where the grid came from. Dashed and amber, so it is not mistaken for the ring
+  // (where the bug is) or the click box (where the reader pointed); and skipped
+  // when the sample is the bug's own cell, where the ring already says it.
+  if (watched.age > 0) {
+    const frame = senseFrame({ x: Math.trunc(hash / dish.height), y: hash % dish.height },
+      watched.dir, dish.width, dish.height);
+    if (frame.moved) {
+      const sampled = cellCentre(l, frame.at.x, frame.at.y);
+      const size = Math.max(3, l.cellPx);
+      const dash = Math.max(1, Math.round(2 * dpr));
+      ctx.setLineDash([dash, dash]);
+      ctx.strokeStyle = '#ffd166';
+      ctx.strokeRect(
+        toDevice(sampled.x - size / 2, dpr) + 0.5, toDevice(sampled.y - size / 2, dpr) + 0.5,
+        toDevice(size, dpr) - 1, toDevice(size, dpr) - 1,
+      );
+      ctx.setLineDash([]);
+    }
+  }
 }
 
 /** Keep a followed bug on screen: centred, as far as the world's edges allow. */

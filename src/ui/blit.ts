@@ -21,6 +21,13 @@
  * what lives here now, in one place, asserted by test, so a rewrite of the render
  * loop cannot quietly reintroduce the transpose.
  *
+ * Worth knowing before trusting a screenshot: at an even cell pitch a transposed
+ * blit is pixel-identical to a correct one, because every cell then occupies a
+ * square block and the grid of blocks is symmetric under the swap. The page's zoom
+ * steps are 1, 2, 4, 8, so on a world fitted at 2 the dish cannot show a transpose
+ * at all -- and therefore cannot be visually cleared of one either. That is why the
+ * orientation is asserted here against the cell array rather than against the view.
+ *
  * The palette is passed in rather than imported, because this module is about
  * placement. `ArrayLike` rather than `number[]`: the page's table is a packed
  * `Uint32Array`, and the only thing this loop does with an entry is read it.
