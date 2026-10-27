@@ -36,6 +36,7 @@ import { geneSpread } from '../dist/src/sim/variance.js';
 import { barIndex, chartColumns, chartSummary, geneAtColumn } from '../dist/src/ui/varianceChart.js';
 import { nearestBugAnywhere, pickNearestBug } from '../dist/src/ui/pickBug.js';
 import { DEFAULT_PARAMS, ENERGY_COLOR, POISON_COLOR, MAX_BUG_COLOR, BKG_COLOR } from '../dist/src/sim/params.js';
+import { PALETTE, colourName, cssFor, onColour } from '../dist/src/ui/palette.js';
 import { Rng } from '../dist/src/sim/rng.js';
 import { fingerprint } from '../dist/src/sim/fingerprint.js';
 import {
@@ -55,48 +56,10 @@ import { CLASS_LABEL, CLASS_ORDER, genomeStrip, opClass } from '../dist/src/ui/g
 import { genePool } from '../dist/src/ui/genePool.js';
 
 // ---------------------------------------------------------------- palette
-// petriwidget.cpp:10-29, exactly: 0 black, 1..252 a red -> yellow -> green ramp
-// (the same ramp the bug colours use), 253 cyan, 254 magenta (poison), 255 blue
-// (energy). Cyan is reserved and unused by any view mode, which is upstream's
-// state too, so it is kept rather than tidied away.
-const rgba = (r, g, b) => ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
-
-const PALETTE = (() => {
-  const table = new Uint32Array(256);
-  for (let i = 1; i <= MAX_BUG_COLOR; i++) {
-    const f = (i - 1) / 252;
-    const r = f <= 0.5 ? 0xff : Math.trunc(0xff * (1 - f) * 2);
-    const g = f <= 0.5 ? Math.trunc(0xff * f * 2) : 0xff;
-    table[i] = rgba(r, g, 0);
-  }
-  table[BKG_COLOR] = rgba(0, 0, 0);
-  table[253] = rgba(0, 255, 255);
-  table[POISON_COLOR] = rgba(255, 0, 255);
-  table[ENERGY_COLOR] = rgba(0, 0, 255);
-  return table;
-})();
-
-/** The palette as CSS, for the surfaces that are not the canvas. Same table, so a
- *  colour means one thing on both (varianceChart.ts says why that matters). */
-const cssColor = (packed) =>
-  `rgb(${packed & 0xff}, ${(packed >>> 8) & 0xff}, ${(packed >>> 16) & 0xff})`;
-
-/** What a colour byte means, in words. One function because two surfaces show it
- *  -- the world's hovertip and the bug panel's sense grid -- and they must not be
- *  able to disagree about whether a magenta cell is a bug or a poison pile.
- *  253 is named rather than omitted: it is reserved and unreachable, and saying so
- *  is cheaper than a reader wondering why the 254 threshold is worth stating. */
-const colourName = (value) =>
-  value === BKG_COLOR ? 'empty'
-    : value === POISON_COLOR ? 'poison'
-      : value === ENERGY_COLOR ? 'energy cell'
-        : value === 253 ? 'cyan (reserved)'
-          : `bug colour ${value}`;
-
-/** A sense cell is drawn on a bright fill, so its text has to contrast with the
- *  fill rather than with the page. The blue of an energy cell is the only dark
- *  one -- dark text on it measures 2.2:1 -- so it is the only one that goes light. */
-const onColour = (value) => (value === ENERGY_COLOR ? '#e8eef4' : '#0a0c0f');
+// The colour table and its CSS rendering live in src/ui/palette.ts, which is
+// testable; this page only asks it what a code looks like. The legend used to
+// pack the table itself and got poison and energy wrong by passing a code where
+// a packed word belonged -- see that module's header.
 
 // ---------------------------------------------------------------- elements
 const $ = (id) => {
@@ -548,19 +511,19 @@ function renderLegend(mode) {
     const box = document.createElement('i');
     box.className = 'ramp';
     // The real palette the blit uses, sampled: this cannot drift from the dish.
-    box.style.background = `linear-gradient(90deg, ${cssColor(PALETTE[1])}, ${cssColor(PALETTE[126])}, ${cssColor(PALETTE[252])})`;
+    box.style.background = `linear-gradient(90deg, ${cssFor(1)}, ${cssFor(MAX_BUG_COLOR / 2)}, ${cssFor(MAX_BUG_COLOR)})`;
     item.append(box, document.createTextNode(text));
     host.append(item);
   };
 
   switch (mode) {
     case ViewMode.DEFAULT:
-      swatch(cssColor(PALETTE[126]), 'bug colour');
-      swatch(cssColor(POISON_COLOR), 'poison');
-      swatch(cssColor(ENERGY_COLOR), 'energy cell');
+      swatch(cssFor(126), 'bug colour');
+      swatch(cssFor(POISON_COLOR), 'poison');
+      swatch(cssFor(ENERGY_COLOR), 'energy cell');
       break;
     case ViewMode.BUGS:
-      swatch(cssColor(PALETTE[126]), 'bug colour');
+      swatch(cssFor(126), 'bug colour');
       host.append(document.createTextNode('everything else is black'));
       break;
     case ViewMode.ENERGY:
@@ -1197,7 +1160,7 @@ function updateBugLive(bug, hash) {
     // energy cell, and the dish draws those magenta and blue. Clamping them into
     // the bug ramp -- which this did, at 252 -- showed a poison cell as an
     // ordinary bug, and a bug that dies on it would have looked inexplicable.
-    cell.cell.style.background = empty ? '#0d1114' : cssColor(PALETTE[hue]);
+    cell.cell.style.background = empty ? '#0d1114' : cssFor(hue);
     cell.cell.style.color = empty ? '#8f9caa' : onColour(hue);
     cell.value.textContent = String(energy);
     cell.cell.title = `slot ${slot}: ${colourName(hue)}, energy ${energy}`
@@ -1218,7 +1181,7 @@ function updateBugLive(bug, hash) {
   // 1..252, so the drawn index is `% 252 + 1` of it (machine.ts is explicit here).
   const drawn = bug.color % 252 + 1;
   view.colour.lastChild.textContent = ` ${drawn}`;
-  view.swatch.style.background = cssColor(PALETTE[drawn]);
+  view.swatch.style.background = cssFor(drawn);
 
   view.head.textContent = (running
     ? 'running — click a bug and it holds still'
@@ -1421,7 +1384,7 @@ function measureVariance() {
     // A gene that varies a little is drawn at least one pixel high, so it cannot
     // render as indistinguishable from a gene that does not vary at all.
     const bar = Math.max(value > 0 ? 1 : 0, Math.round(value * height));
-    varCtx.fillStyle = cssColor(PALETTE[barIndex(value)]);
+    varCtx.fillStyle = cssFor(barIndex(value));
     varCtx.fillRect(c, height - bar, 1, bar);
   }
 

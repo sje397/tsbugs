@@ -21,8 +21,9 @@
  * what lives here now, in one place, asserted by test, so a rewrite of the render
  * loop cannot quietly reintroduce the transpose.
  *
- * The palette is passed in rather than imported: the colours belong to the page
- * (they are the same table the legend shows), and this module is about placement.
+ * The palette is passed in rather than imported, because this module is about
+ * placement. `ArrayLike` rather than `number[]`: the page's table is a packed
+ * `Uint32Array`, and the only thing this loop does with an entry is read it.
  */
 
 /** Bytes per pixel in the output, as a name, so the length check reads as itself. */
@@ -41,7 +42,7 @@ export function blitViewCol(
   width: number,
   height: number,
   out: Uint32Array,
-  palette: readonly number[],
+  palette: ArrayLike<number>,
 ): void {
   if (viewCol.length !== width * height) {
     throw new Error(`viewCol is ${viewCol.length} cells, but ${width}x${height} is ${width * height}`);
