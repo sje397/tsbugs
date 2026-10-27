@@ -3,310 +3,592 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tsbugs</title>
+<title>tsbugs — an evolving machine</title>
 <style>
+  /* ------------------------------------------------------------------ tokens
+     One dark lab bench, two type families: sans for prose and labels, mono for
+     anything the model computes. Every number on this page is tabular, because
+     a readout that reflows as it counts is a readout you have to re-find. */
   :root {
-    --bg: #101214; --panel: #181c1f; --line: #2b3238; --text: #d6dde3;
-    --dim: #7d8b95; --hot: #7ec46b;
+    --bg: #0a0c0f;
+    --surface: #11151a;
+    --surface-2: #161b21;
+    --surface-3: #1c222a;
+    --line: rgba(255, 255, 255, 0.075);
+    --line-strong: rgba(255, 255, 255, 0.14);
+    --text: #e7edf3;
+    --muted: #8f9caa;
+    --dim: #66717d;
+    --accent: #3ed6b4;
+    --accent-soft: rgba(62, 214, 180, 0.14);
+    --gen: #7ec46b;
+    --warn: #e0916a;
+    --bug: #6ee7ff;
+    --radius: 10px;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, system-ui, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --pad: 14px;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-    display: flex; gap: 18px; padding: 18px; align-items: flex-start;
+    margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 var(--sans);
+    display: flex; flex-direction: column; overflow: hidden;
   }
-  canvas {
-    background: #000; display: block;
-    /* petriwidget.cpp draws the image nearest-neighbour (Qt::FastTransformation);
-       the CSS below only affects the backing store, not the sampling. */
-    image-rendering: pixelated;
+  b, .num { font-variant-numeric: tabular-nums; font-weight: 600; }
+  h1 { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+  code { font-family: var(--mono); font-size: 12px; }
+
+  /* --------------------------------------------------------------- topbar */
+  .topbar {
+    display: flex; align-items: center; flex-wrap: wrap; column-gap: 18px; row-gap: 8px; flex: none;
+    padding: 10px var(--pad); border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #10151b, #0c1014);
   }
-  /* The panel is a column that may not grow past the world beside it: the run
-     controls and the stats are pinned at its ends, and the section in the middle
-     scrolls. Without that bound the controls ran far past the bottom of the image
-     and the page became one long strip.
-     380px, not 300: the code listing is ~45 monospace characters wide, and a
-     wrapped instruction is unreadable. --side-h is set from the canvas by
-     syncPanelHeight(), so this holds when the world is rebuilt at another size. */
-  #panel {
-    width: 380px; flex: none; display: flex; flex-direction: column; gap: 10px;
-    max-height: min(var(--side-h, 720px), calc(100vh - 36px));
+  .brand { display: flex; align-items: center; gap: 9px; padding-right: 6px; }
+  .brand .mark {
+    width: 10px; height: 10px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 12px rgba(62, 214, 180, .75);
   }
-  fieldset {
-    border: 1px solid var(--line); background: var(--panel);
-    margin: 0; padding: 10px 12px 12px; flex: none;
-  }
-  legend { color: var(--dim); padding: 0 6px; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 5px 0; }
-  .row > span:first-child { color: var(--dim); }
-  .row > span:last-child { font-variant-numeric: tabular-nums; }
+  .brand .what { color: var(--dim); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+
+  .tickers { display: flex; gap: 18px; margin-right: auto; }
+  .ticker { display: flex; flex-direction: column; line-height: 1.25; }
+  .ticker .k { color: var(--dim); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
+  .ticker b { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .ticker b.live { color: var(--gen); }
+
+  .transport { display: flex; align-items: center; gap: 8px; }
+  .fld { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+  .fld.tight { gap: 5px; }
+  .fld input[type=range] { width: 96px; accent-color: var(--accent); }
+  .fld.chk input { accent-color: var(--accent); }
+  .fld b { font-family: var(--mono); color: var(--text); min-width: 1.4em; text-align: right; }
+
   button {
-    font: inherit; color: var(--text); background: #232a2f;
-    border: 1px solid var(--line); border-radius: 3px; padding: 4px 10px; cursor: pointer;
+    font: inherit; color: var(--text); background: var(--surface-3);
+    border: 1px solid var(--line-strong); border-radius: 7px; padding: 5px 11px; cursor: pointer;
+    transition: background .12s, border-color .12s, color .12s;
   }
-  button:hover { border-color: #3d474f; }
-  button.primary { background: #2b4a2b; border-color: #3d6b3d; }
-  input[type=range] { width: 150px; }
-  input[type=text], input[type=number], select {
-    font: inherit; color: var(--text); background: #232a2f;
-    border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px; width: 90px;
+  button:hover { background: #232b34; border-color: rgba(255, 255, 255, .24); }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent-soft); border-color: rgba(62, 214, 180, .45); color: #b6f5e6; }
+  button.primary:hover { background: rgba(62, 214, 180, .22); }
+  button:disabled { opacity: .45; cursor: default; }
+
+  /* A segmented control: one of n, chosen. Radio inputs are hidden inside the
+     labels, so the whole label is the hit target and :has() styles the choice. */
+  /* A segmented control whose options do not fit has to wrap: a clipped option is an
+     unreachable one, and these are the only route to their settings. */
+  .seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; padding: 2px; gap: 2px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; }
+  .seg > button, .seg > label {
+    border: 0; background: transparent; border-radius: 6px; padding: 3px 9px;
+    color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap;
   }
-  /* 90px is too narrow for the size select's own option text ("240 x 240" clips to
-     "240 x 2" once the dropdown arrow and padding are taken out of it). */
-  #size { width: 112px; }
-  /* Same problem with the save name: its placeholder says what an empty box does,
-     and at 90px the sentence is cut off, so the hint is unreadable. Wide enough
-     for the placeholder and for a date-and-time name if one is pasted back in
-     (19 characters), which is the longest default this page produces. */
-  #saveName { width: 186px; }
-  /* The tab strip. Four sections, because the panel is a fixed column and the
-     controls that are not being changed do not need to be on screen. */
-  #tabs { display: flex; gap: 4px; flex: none; }
-  #tabs button {
-    flex: 1; padding: 3px 4px; color: var(--dim); background: transparent;
-    border-radius: 3px 3px 0 0; border-bottom-color: transparent;
+  .seg > button:hover, .seg > label:hover { background: var(--surface-3); color: var(--text); }
+  .seg > button[aria-pressed="true"], .seg > button[aria-selected="true"] { background: var(--accent-soft); color: #b6f5e6; }
+  /* Six modes in one row is 396px: wider than the dish bar on a phone. Wrapping is
+     the only option that keeps every mode reachable, so the control becomes two
+     rows rather than overflowing its container. */
+  #modes { flex-wrap: wrap; max-width: 100%; }
+  #modes label { display: inline-flex; align-items: center; gap: 5px; }
+  #modes input { position: absolute; opacity: 0; pointer-events: none; }
+  #modes label:has(input:checked) { background: var(--accent-soft); color: #b6f5e6; }
+
+  /* ---------------------------------------------------------------- layout
+     Three layouts, one page. `dish` gives the picture everything; `split` is the
+     working view; `charts` trades the picture for history. The rail is the same
+     column in all three, so the panel never moves out from under the pointer. */
+  /* The rail is 520px wide because the listing is what the panel is for, and its
+     rows are 65 mono characters: at 400px the rail leaves #dis 372px, which is 51
+     characters, so 1011 of a 3620-instruction genome's rows had to be scrolled
+     sideways to finish reading the operand — at 1101, 1280, 1440 and 1920 alike,
+     since a fixed rail does not grow with the window. 120px more gives the listing
+     492px and no row scrolls.
+     The stage pays nothing for it, which is the part worth measuring rather than
+     assuming: at every one of those widths the dish's pixels-per-cell is decided by
+     the canvas HEIGHT (1, 1, 2 and 3 px per cell), so the picture is identical
+     either side of the change. Check `cellPx` before widening this further — a
+     window tall enough for width to bind would make the rail a trade, not slack. */
+  main {
+    flex: 1 1 auto; min-height: 0; display: grid;
+    grid-template-columns: minmax(0, 1fr) 520px; gap: var(--pad); padding: var(--pad);
   }
-  #tabs button[aria-selected="true"] {
-    color: var(--text); background: var(--panel); border-color: var(--line); border-bottom-color: var(--panel);
+  .stage { display: grid; grid-template-rows: minmax(0, 1fr) auto auto; gap: 10px; min-height: 0; min-width: 0; }
+  body[data-layout="charts"] .stage { grid-template-rows: auto minmax(0, 1fr); }
+  body[data-layout="charts"] .dish { display: none; }
+  body[data-layout="dish"] .tiles, body[data-layout="dish"] .chartArea { display: none; }
+  body[data-layout="dish"] .stage { grid-template-rows: minmax(0, 1fr); }
+
+  /* ------------------------------------------------------------------ dish */
+  /* min-width 0 because the canvas is a replaced element whose intrinsic width is
+     its backing store: below the narrow breakpoint the dish is sized by its
+     content, so without this the store grows the box, which grows the store. */
+  .dish {
+    position: relative; min-height: 0; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius);
+    background: #000; overflow: hidden;
+    box-shadow: inset 0 0 60px rgba(0, 0, 0, .9), 0 10px 30px rgba(0, 0, 0, .35);
   }
-  #tabs button:hover { color: var(--text); }
-  /* The only scrolling region in the panel, and the reason its height can be
-     bounded: min-height 0 is what lets a flex item shrink below its content. */
+  /* The world is its own box so that the picture can be given a height without the
+     canvas's backing store (a replaced element's intrinsic size) arguing back. On
+     every layout but the narrowest the box is simply the whole dish. */
+  .world { position: absolute; inset: 0; min-width: 0; min-height: 0; }
+  /* The backing store follows this element's CSS size (see resizeCanvas), and the
+     world is drawn into it at an integer scale, so nothing here resamples. */
+  #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
+  #view.panning { cursor: grabbing; }
+  .dishBar {
+    position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; align-items: center;
+    gap: 10px; flex-wrap: wrap; padding: 7px 9px; border-radius: 9px;
+    background: rgba(10, 13, 16, .82); border: 1px solid var(--line);
+    backdrop-filter: blur(8px); font-size: 11px;
+  }
+  .dishBar .spacer { flex: 1; }
+  .dishBar input[type=number] { width: 58px; }
+  .zoombar button { font-family: var(--mono); }
+  .legend {
+    position: absolute; left: 10px; top: 10px; display: flex; flex-wrap: wrap; gap: 10px;
+    padding: 5px 9px; border-radius: 8px; background: rgba(10, 13, 16, .78);
+    border: 1px solid var(--line); font-size: 11px; color: var(--muted); pointer-events: none;
+  }
+  .legend .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; border: 1px solid rgba(255,255,255,.15); }
+  .legend .ramp { display: inline-block; width: 64px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  /* The hover probe: what is under the pointer, named. Fixed to the top-right so it
+     cannot cover the cell it describes; pointer-events none so it never eats a click. */
+  .hud {
+    position: absolute; right: 10px; top: 10px; min-width: 128px; padding: 6px 9px; border-radius: 8px;
+    background: rgba(10, 13, 16, .85); border: 1px solid var(--line); font-size: 11px;
+    font-family: var(--mono); color: var(--text); pointer-events: none; line-height: 1.55;
+  }
+  .hud .k { color: var(--dim); }
+  .banner {
+    position: absolute; left: 50%; top: 10px; transform: translateX(-50%);
+    max-width: min(560px, 90%); padding: 6px 12px; border-radius: 8px; font-size: 12px;
+    background: rgba(18, 24, 30, .92); border: 1px solid var(--line-strong); color: var(--text);
+    opacity: 0; transition: opacity .25s; pointer-events: none;
+  }
+  .banner.show { opacity: 1; }
+  .banner.bad { border-color: rgba(224, 145, 106, .5); color: var(--warn); }
+
+  /* ----------------------------------------------------------------- tiles */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px; }
+  .tile {
+    padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+    display: flex; flex-direction: column; gap: 1px; min-width: 0;
+  }
+  .tile .k { color: var(--dim); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile .v { font-family: var(--mono); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .tile .v small { color: var(--dim); font-size: 11px; font-weight: 400; }
+
+  /* ---------------------------------------------------------------- charts */
+  .chartArea {
+    display: flex; flex-direction: column; gap: 6px; padding: 9px 11px 7px;
+    border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+    min-height: 0;
+  }
+  body[data-layout="charts"] .chartArea { flex: 1; }
+  .chartHead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .chartHead .now { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .chartHead .now b { color: var(--text); }
+  #chart { width: 100%; height: 108px; display: block; overflow: visible; }
+  body[data-layout="charts"] #chart { flex: 1; height: auto; min-height: 200px; }
+  #chart .grid line { stroke: rgba(255, 255, 255, .06); stroke-width: 1; }
+  #chart .axis text { fill: var(--dim); font: 10px var(--mono); }
+  #chart .line { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+  #chart .area { fill: url(#chartFill); stroke: none; }
+  #chart .cursor line { stroke: rgba(255, 255, 255, .35); stroke-width: 1; }
+  #chart .cursor circle { fill: var(--accent); }
+  #chart .cursor text { fill: var(--text); font: 10px var(--mono); }
+  #chart .empty { fill: var(--dim); font: 11px var(--sans); }
+
+  /* ------------------------------------------------------------------ rail */
+  .rail {
+    display: flex; flex-direction: column; min-height: 0; min-width: 0;
+    border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+    overflow: hidden;
+  }
+  .railTabs { display: flex; flex: none; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+  .railTabs button {
+    flex: 1; padding: 9px 4px; border: 0; border-radius: 0; background: transparent;
+    color: var(--muted); font-size: 12px; border-bottom: 2px solid transparent;
+  }
+  .railTabs button:hover { background: var(--surface-3); color: var(--text); }
+  .railTabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); background: var(--surface); }
+  /* The one scrolling region: min-height 0 is what lets a flex item shrink below
+     its content, which is what makes the panel bounded rather than a long strip. */
   .tabbody {
     flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
-    gap: 12px; padding-right: 2px;
+    gap: 12px; padding: 12px;
   }
-  /* A scrollbar that is always drawn. macOS shows an overlay bar only while the
-     wheel is moving, so the row cut by the bottom edge reads as a layout that
-     overflows rather than a list that continues -- the one thing a bounded panel
-     must not look like. Chromium and WebKit only switch off the overlay when the
-     ::-webkit-scrollbar pseudo-element is styled; `scrollbar-width` is the
-     standard property and, when it is also set, Chromium honours it instead and
-     the bar stays an overlay. So the pseudo-element carries Chromium/WebKit and
-     `scrollbar-width` is scoped to engines that have no pseudo-element to style. */
-  .tabbody::-webkit-scrollbar { width: 8px; }
-  .tabbody::-webkit-scrollbar-thumb { background: #39434b; border-radius: 4px; }
+  /* Always-drawn scrollbar: macOS overlay bars only appear while the wheel moves,
+     so between gestures a row cut by the bottom edge reads as a layout that
+     overflows rather than a list that continues. */
+  .tabbody::-webkit-scrollbar { width: 9px; }
+  .tabbody::-webkit-scrollbar-thumb { background: #2c353f; border-radius: 5px; }
   .tabbody::-webkit-scrollbar-track { background: transparent; }
   @supports not selector(::-webkit-scrollbar) {
-    .tabbody { scrollbar-width: thin; scrollbar-color: #39434b transparent; }
+    .tabbody { scrollbar-width: thin; scrollbar-color: #2c353f transparent; }
   }
   .tabbody > section { display: flex; flex-direction: column; gap: 12px; }
-  /* An author rule for `section` beats the UA stylesheet's [hidden] { display: none }. */
   .tabbody > section[hidden] { display: none; }
-  /* More below, and it says so. A native scrollbar is the affordance, but macOS
-     draws an overlay bar only while the wheel is moving, so between gestures a
-     row cut by the bottom edge reads as a layout that overflows rather than a
-     list that continues -- the one thing a bounded panel must not look like. The
-     mask sits on the scroll CONTAINER, so it stays at the box's bottom edge
-     instead of scrolling away with the content, and it is removed at the end of
-     the list: a fade over content that has ended would hide the last row. */
-  #tabbody.more {
+  .tabbody.more {
     -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
     mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
   }
-  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
-  .modes label { color: var(--text); cursor: pointer; }
-  .modes input { vertical-align: -1px; }
-  /* Parameter panel and inspector. The group headings carry the promise the
-     original's dialog could not: whether a field does anything when you change it. */
-  .group { color: var(--hot); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; margin: 10px 0 2px; }
-  .group:first-child { margin-top: 0; }
-  .note { color: var(--dim); font-size: 11px; margin: -1px 0 4px; }
-  .msg { color: var(--dim); font-size: 11px; margin-top: 8px; min-height: 15px; }
-  .msg.bad { color: #e0916a; }
-  #params input[type=number] { width: 78px; }
-  #params input[type=range] { width: 78px; vertical-align: -4px; }
-  #params select { width: 150px; }
-  #savedList { margin-top: 8px; display: grid; gap: 4px; }
-  #savedList:empty { display: none; }
-  /* A saved world is one row: the name and what it holds on the left, its two
-     actions on the right. The name truncates rather than wrapping, because a
-     wrapped row pushes the buttons out of line with everything else. */
-  .saved { display: flex; align-items: center; gap: 6px; }
-  .saved .what { flex: 1; min-width: 0; }
-  .saved .what b { font-weight: normal; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .saved .what span { color: var(--dim); font-size: 11px; }
-  .saved .what span.bad { color: #e0916a; }
-  .saved button { padding: 2px 8px; }
-  .swatch { display: inline-block; width: 10px; height: 10px; border: 1px solid var(--line); vertical-align: -1px; }
-  #dis { max-height: 300px; overflow: auto; background: #14181b; border: 1px solid var(--line); padding: 4px 6px; font-size: 12px; }
-  #dis div { white-space: pre; }
-  #dis div.cur { background: #24402a; }
-  #dis div.mid { background: #3a3320; }
-  /* Every byte is its own edit, so every byte says so. The hover is what tells a
-     reader the listing is not a readout: the click that lands on a byte opens it. */
-  #dis span.b { cursor: pointer; border-radius: 2px; }
-  #dis span.b:hover { background: #2c3a44; outline: 1px solid #3d5260; }
-  #dis span.cursor { color: var(--hot); }
-  #dis input.byteEdit {
-    width: 2.4em; font: inherit; padding: 0 1px; text-align: center;
-    color: var(--text); background: #232a2f; border: 1px solid var(--hot); border-radius: 2px;
+
+  fieldset {
+    border: 1px solid var(--line); background: var(--surface-2); border-radius: 9px;
+    margin: 0; padding: 9px 12px 11px; min-width: 0;
   }
-  /* The mutation rate is a slider and an exact box side by side, because the
-     slider quantises and the box is what states a rate the slider cannot hold.
-     Both are a fixed width and the cell does not shrink, so the pair sit in the
-     same place whatever the reading below them says: the reading used to share
-     this cell, and its length dragged the slider sideways as the number changed. */
-  #params .rate { display: inline-flex; align-items: center; gap: 4px; flex: none; }
-  #params .rate input[type=range] { width: 96px; vertical-align: -4px; }
+  legend { color: var(--dim); padding: 0 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 5px 0; }
+  .row > span:first-child { color: var(--muted); font-size: 12px; }
+  .row > span:last-child { font-variant-numeric: tabular-nums; }
+  .row.stack { flex-direction: column; align-items: stretch; gap: 4px; }
+  input[type=text], input[type=number], select {
+    font: inherit; color: var(--text); background: var(--surface-3);
+    border: 1px solid var(--line-strong); border-radius: 6px; padding: 3px 7px; width: 92px;
+  }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #size { width: 112px; }
+  #saveName { width: 100%; }
+  .note { color: var(--dim); font-size: 11px; margin: -1px 0 4px; }
+  .msg { color: var(--dim); font-size: 11px; min-height: 15px; }
+  .msg.bad { color: var(--warn); }
+  .dim { color: var(--muted); }
+
+  /* Parameter panel and inspector. The group heading carries the promise the
+     original's dialog could not make: whether a field does anything right now. */
+  .group { color: var(--accent); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; margin: 12px 0 3px; }
+  .group:first-child { margin-top: 0; }
+  #params input[type=number] { width: 82px; }
+  #params input[type=range] { width: 82px; vertical-align: -4px; accent-color: var(--accent); }
+  #params select { width: 150px; }
+  #params .rate { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+  #params .rate input[type=range] { width: 96px; }
   #params .rate input[type=number] { width: 88px; }
   .rateNote {
-    display: block; color: var(--dim); font-size: 11px;
-    /* One line, always: a note that wrapped would change the panel's height as
-       the thumb is dragged, and a blank line of the same height is reserved even
-       when there is nothing to say. */
-    height: 15px; line-height: 15px; margin: -2px 0 4px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: block; color: var(--dim); font-size: 11px; height: 15px; line-height: 15px;
+    margin: -2px 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .dim { color: var(--dim); }
-  /* The gene chart is a chart, not pixel art: it draws one bar per CSS pixel and
-     sizes its own backing store, so it scales smoothly where the world does not. */
+
+  /* ------------------------------------------------------------- inspector */
+  .who { display: flex; align-items: baseline; gap: 8px; }
+  .who .id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 99px;
+    background: var(--surface-3); border: 1px solid var(--line-strong); font-size: 10px;
+    letter-spacing: .05em; text-transform: uppercase; color: var(--muted);
+  }
+  .pill.live { color: #b6f5e6; border-color: rgba(62, 214, 180, .4); background: var(--accent-soft); }
+  .pill.dead { color: var(--warn); border-color: rgba(224, 145, 106, .4); background: rgba(224, 145, 106, .1); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+  .kv span { white-space: nowrap; font-size: 12px; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  .kv span:nth-child(even) { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .kv span.wide { text-align: left; white-space: normal; }
+
+  /* Registers: the machine itself. Three rows of four, so ip/sp/bp/acc and the
+     stack size read as one block rather than six unrelated facts. */
+  .regs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .reg {
+    padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-3);
+    font-family: var(--mono); display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
+  }
+  .reg .k { color: var(--dim); font-size: 11px; }
+  .reg .v { font-size: 14px; }
+  .reg .v small { color: var(--dim); font-size: 10px; }
+  .reg.changed { border-color: rgba(62, 214, 180, .55); box-shadow: 0 0 0 1px var(--accent-soft) inset; }
+
+  /* What the bug can see: the nine cells it was handed, in the order it was handed
+     them. Cells are labelled with their slot index, because that index is what the
+     program's own instructions refer to and a reader learning the model needs both. */
+  .senses { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .sense {
+    position: relative; aspect-ratio: 1 / 1; border-radius: 6px; border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 11px; color: #0a0c0f; font-weight: 700;
+  }
+  .sense .idx { position: absolute; left: 3px; top: 2px; font-size: 9px; font-weight: 400; opacity: .55; }
+  .sense.mid { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+  .decision { font-size: 12px; line-height: 1.6; }
+  .decision .act { color: var(--accent); }
+  .decision .n { font-family: var(--mono); }
+
+  /* The code listing. Every byte is its own edit, so every byte says so on hover;
+     the click that lands on a byte opens it. */
+  #dis { max-height: 320px; overflow: auto; background: #0d1114; border: 1px solid var(--line); border-radius: 8px; padding: 5px 7px; font-family: var(--mono); font-size: 12px; }
+  #dis div { white-space: pre; }
+  /* The rule .tabbody already carries, extended to the horizontal axis: where a
+     platform draws classic bars, this is the only cue that a row continues past the
+     right edge, and `auto` still shows nothing where the rows fit.
+     On macOS the bars are overlay and reserve no space — measured, Chrome 156 at
+     390px: offsetWidth - clientWidth is the 1px border and nothing more — so this
+     changes nothing here. The rail width above is what removes the sideways scroll;
+     this is for the platforms whose bars behave differently. */
+  #dis::-webkit-scrollbar { width: 9px; height: 9px; }
+  #dis::-webkit-scrollbar-thumb { background: #2c353f; border-radius: 5px; }
+  #dis::-webkit-scrollbar-track { background: transparent; }
+  @supports not selector(::-webkit-scrollbar) {
+    #dis { scrollbar-width: thin; scrollbar-color: #2c353f transparent; }
+  }
+  #dis div.cur { background: rgba(62, 214, 180, .14); }
+  #dis div.mid { background: rgba(224, 145, 106, .14); }
+  #dis span.b { cursor: pointer; border-radius: 2px; }
+  #dis span.b:hover { background: #243039; outline: 1px solid #3d5260; }
+  #dis span.cursor { color: var(--gen); }
+  #dis input.byteEdit {
+    width: 2.4em; font: inherit; padding: 0 1px; text-align: center; color: var(--text);
+    background: var(--surface-3); border: 1px solid var(--accent); border-radius: 3px;
+  }
+  .disHead { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+
+  /* The genome strip: every byte of the program, coloured by what the opcode does. */
+  .strip { display: flex; flex-wrap: wrap; gap: 2px; }
+  .strip .b {
+    width: 13px; height: 18px; border-radius: 2px; font-family: var(--mono); font-size: 9px;
+    display: flex; align-items: center; justify-content: center; color: rgba(0, 0, 0, .82);
+    cursor: pointer; border: 1px solid rgba(255, 255, 255, .08);
+  }
+  .strip .b.ip { outline: 2px solid #fff; outline-offset: -1px; }
+  .strip .b:hover { filter: brightness(1.25); }
+  .poolRow { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+  .poolRow .bar { flex: 1; height: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+  .poolRow .bar i { display: block; height: 100%; background: var(--accent); }
+  .poolRow .nm { width: 88px; color: var(--muted); font-family: var(--mono); }
+  .poolRow .pc { width: 40px; text-align: right; font-family: var(--mono); color: var(--text); }
+
+  /* Gene variance: one bar per CSS pixel, sized by its own backing store. */
   #varBox { height: 96px; }
-  #variance { width: 100%; height: 100%; background: #14181b; border: 1px solid var(--line); image-rendering: auto; }
-  .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
-  /* No reading wraps: "1354 / 3302" on two lines made its row twice the height of
-     its neighbour's and pushed the pair out of line with the rest. */
-  .stats span { white-space: nowrap; }
-  .stats span:nth-child(odd) { color: var(--dim); }
-  .stats span:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
-  /* The pinned readout: sixteen cells in two label/value pairs per line, which is
-     half the height of one column of eight. The inspector's grid keeps the single
-     pair, because its values carry sentences ("inside the instruction at ..."). */
-  .stats.wide { grid-template-columns: auto 1fr auto 1fr; gap: 1px 8px; }
-  .gen { color: var(--hot); }
-  #statsbar { flex: none; border-top: 1px solid var(--line); padding-top: 6px; }
-  footer { color: var(--dim); font-size: 11px; flex: none; }
-  /* A phone: put the panel under the world and let the canvas have the width. The
-     backing store stays 240*scale; this only changes the CSS size, and
-     `image-rendering: pixelated` above means it scales without smoothing. The
-     world is 240 px, so a non-integer display scale gives slightly irregular
-     pixel widths — visible, and the price of fitting the screen. The panel keeps
-     its tabs but loses the height bound: the page scrolls instead. */
-  @media (max-width: 860px) {
-    body { flex-direction: column; padding: 10px; gap: 12px; }
-    canvas { width: 100%; height: auto; }
-    #panel { width: 100%; max-height: none; }
-    .tabbody { overflow: visible; }
+  #variance { width: 100%; height: 100%; background: #0d1114; border: 1px solid var(--line); border-radius: 8px; image-rendering: auto; }
+
+  #savedList { margin-top: 8px; display: grid; gap: 4px; }
+  #savedList:empty { display: none; }
+  .saved { display: flex; align-items: center; gap: 6px; }
+  .saved .what { flex: 1; min-width: 0; }
+  .saved .what b { font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  .saved .what span { color: var(--dim); font-size: 11px; }
+  .saved .what span.bad { color: var(--warn); }
+  .saved button { padding: 2px 8px; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border: 1px solid var(--line); vertical-align: -1px; border-radius: 2px; }
+
+  footer { flex: none; padding: 8px 12px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; }
+  footer a { color: var(--muted); }
+
+  /* ------------------------------------------------------------- narrow */
+  @media (max-width: 1100px) {
+    body { overflow: auto; }
+    /* Single column means the page grows downwards instead of fitting the window:
+       main has to size to its content, or it is clamped to the viewport and its
+       children spill past the padding that is supposed to sit under them. */
+    main { grid-template-columns: minmax(0, 1fr); flex: none; }
+    /* The dish row is given a height rather than taking the leftovers. Leftovers are
+       the wrong unit here: at 1024x768 the width is enormous and the height nearly
+       gone, so the dish was 227px tall in a 996px column, and on a landscape phone
+       (844x390) the tiles and chart consumed the row entirely and the picture had no
+       height at all. As wide as the column allows, never taller than the window. */
+    .stage { min-height: 0; grid-template-rows: min(calc(100vw - 40px), 65vh) auto auto; }
+    body[data-layout="dish"] .stage { grid-template-rows: min(calc(100vw - 40px), 85vh); }
+    body[data-layout="charts"] .stage { grid-template-rows: min(calc(100vw - 40px), 55vh) minmax(220px, 45vh); }
+    .rail { min-height: 70vh; }
+  }
+  @media (max-width: 720px) {
+    .topbar { gap: 10px; padding: 9px 10px; }
+    .tickers { order: 3; width: 100%; margin-right: 0; gap: 14px; }
+    main { padding: 10px; gap: 10px; }
+    .dishBar { position: static; border-radius: 0; border-width: 1px 0 0; flex-wrap: wrap; }
+    /* The bar moves below the picture rather than floating over it, so the world gets
+       the full width and is square: a definite width with an aspect ratio is a height
+       the browser can resolve, whereas asking a canvas to take its height from its
+       width *inside* a column makes the dish the size of its own content, and the
+       picture is then clipped by the overflow guard to a thin strip of world. */
+    .dish { display: flex; flex-direction: column; aspect-ratio: auto; }
+    .world { position: relative; inset: auto; width: 100%; aspect-ratio: 1 / 1; flex: none; }
+    /* One column, so the grid earns nothing here: an auto track asks the dish for a
+       height the dish cannot answer, because the world's height comes from its width
+       and its width comes from the track. Block layout sizes the picture first and
+       then the dish around it, which is the order that works. */
+    .stage { display: block; }
+    .stage > * + * { margin-top: 10px; }
+    .legend { display: none; }
+    .railTabs button { font-size: 11px; padding: 8px 2px; }
   }
 </style>
 </head>
-<body>
+<body data-layout="split">
 
-<canvas id="view"></canvas>
-
-<div id="panel">
-
-  <fieldset>
-    <legend>run</legend>
-    <div class="row">
-      <span>
-        <button id="run" class="primary">Stop</button>
-        <button id="step">Step</button>
-      </span>
-      <span id="ups" class="gen">0.00/s</span>
-    </div>
-    <div class="row">
-      <span>ticks/frame</span>
-      <span><input id="speed" type="range" min="1" max="64" value="4"> <span id="speedVal">4</span></span>
-    </div>
-    <div class="row">
-      <span>frame budget</span>
-      <span><input id="budget" type="checkbox"> fill the frame</span>
-    </div>
-  </fieldset>
-
-  <!-- The buttons are the whole tab UI: no router, no history, and the section
-       that is showing is the one whose data-tab matches. -->
-  <div id="tabs" role="tablist" aria-label="panel sections">
-    <button type="button" role="tab" data-tab="params" aria-controls="tab-params">Params</button>
-    <button type="button" role="tab" data-tab="bug" aria-controls="tab-bug">Bug</button>
-    <button type="button" role="tab" data-tab="view" aria-controls="tab-view">View</button>
-    <button type="button" role="tab" data-tab="world" aria-controls="tab-world">Worlds</button>
-  </div>
-
-  <div id="tabbody" class="tabbody">
-
-    <section id="tab-params" role="tabpanel" data-tab="params" hidden>
-      <div id="params"></div>
-      <div id="paramsMsg" class="msg">every change is followed by a read-back of the world</div>
-    </section>
-
-    <section id="tab-bug" role="tabpanel" data-tab="bug" hidden>
-      <div id="bug" class="dim">click a bug in the world</div>
-    </section>
-
-    <section id="tab-view" role="tabpanel" data-tab="view" hidden>
-      <fieldset>
-        <legend>view mode</legend>
-        <div class="modes" id="modes"></div>
-        <div class="row">
-          <span>dna byte</span>
-          <span><input id="showByte" type="number" min="0" value="0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other"></span>
-        </div>
-      </fieldset>
-
-      <fieldset>
-        <legend>gene variance</legend>
-        <div class="note">per gene position, the fraction of the population not holding the
-          commonest byte there — 0 means every bug agrees, 1 means none do</div>
-        <!-- A fixed-height box, because `height: auto` in the narrow-screen rule below
-             would otherwise derive the chart's height from its own backing store, and
-             the chart sizes that from this box. -->
-        <div id="varBox"><canvas id="variance" title="Bar height and colour are the spread at that
-    column's genes: taller and greener means the population holds the same byte there. Positions past
-    the end of every genome read 0 and are drawn as empty columns; they are not counted as fixed."></canvas></div>
-        <div class="note">click a column to set the dna byte the DNA-value view mode reads</div>
-        <div class="row">
-          <span>follow</span>
-          <span><input id="varFollow" type="checkbox" checked> measure as it runs</span>
-        </div>
-        <div id="varMsg" class="msg">not measured yet</div>
-      </fieldset>
-    </section>
-
-    <section id="tab-world" role="tabpanel" data-tab="world" hidden>
-      <fieldset>
-        <legend>world</legend>
-        <div class="row"><span>size</span>
-          <span><select id="size"><option value="240" selected>240 x 240</option><option value="480">480 x 480</option></select></span></div>
-        <div class="row"><span>seed</span>
-          <span><input id="seed" type="number" value="2024" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other"></span></div>
-        <div class="row"><span></span><span><button id="new">New world</button></span></div>
-      </fieldset>
-
-      <fieldset>
-        <legend>saved worlds</legend>
-        <div class="row"><span>name</span>
-          <span><input id="saveName" type="text" maxlength="40" placeholder="blank = date and time"
-            autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other"></span></div>
-        <div class="row"><span></span><span>
-          <button id="save">Save</button>
-          <button id="export">Export</button>
-          <button id="import">Import</button>
-        </span></div>
-        <!-- Hidden rather than styled: the browser's own file picker is the import UI. -->
-        <input id="importFile" type="file" accept=".json,application/json" hidden>
-        <div id="savedList"></div>
-        <div id="savedMsg" class="msg">saved worlds live in this browser's storage</div>
-      </fieldset>
-    </section>
-
-  </div>
-
-  <div id="statsbar">
-    <div class="stats wide">
-      <span>time</span><span id="sTime">0</span><span>population</span><span id="sPop">0</span>
-      <span>generation</span><span id="sGen">0</span><span>world energy</span><span id="sTotal">0</span>
-      <span>bug energy</span><span id="sBug">0</span><span>cell energy</span><span id="sCell">0</span>
-      <span>undistributed</span><span id="sRest">0</span><span>births / deaths</span><span id="sBD">0 / 0</span>
+<div class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1>tsbugs</h1>
+      <div class="what">an evolving machine</div>
     </div>
   </div>
 
-  <footer>
-    Port of QtBugs @ fb3e2d4. DIVERGENCES.md lists every difference.
-  </footer>
+  <div class="tickers">
+    <div class="ticker"><span class="k">tick</span><b id="sTime">0</b></div>
+    <div class="ticker"><span class="k">bugs</span><b id="sPop">0</b></div>
+    <div class="ticker"><span class="k">gen</span><b id="sGen">0</b></div>
+    <div class="ticker"><span class="k">ups</span><b id="ups" class="live">0.00</b></div>
+  </div>
+
+  <div class="transport">
+    <button id="run" class="primary">Stop</button>
+    <button id="step">Step</button>
+    <label class="fld tight">speed <input id="speed" type="range" min="1" max="64" value="4"><b id="speedVal">4</b></label>
+    <label class="fld tight chk"><input id="budget" type="checkbox"> fill frame</label>
+  </div>
+
+  <div class="seg" id="layoutSwitch" role="group" aria-label="layout">
+    <button type="button" data-layout="dish" aria-pressed="false">Dish</button>
+    <button type="button" data-layout="split" aria-pressed="true">Split</button>
+    <button type="button" data-layout="charts" aria-pressed="false">Charts</button>
+  </div>
 </div>
 
+<main>
+  <section class="stage" id="stage">
+
+    <div class="dish" id="dish">
+      <div class="world"><canvas id="view"></canvas></div>
+      <div class="legend" id="legend"></div>
+      <div class="hud" id="hud" hidden></div>
+      <div class="banner" id="banner" role="status" aria-live="polite"></div>
+      <div class="dishBar">
+        <div class="seg" id="modes" role="radiogroup" aria-label="view mode"></div>
+        <label class="fld tight">byte <input id="showByte" type="number" min="0" value="0" aria-label="DNA byte index" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other"></label>
+        <div class="spacer"></div>
+        <div class="seg zoombar">
+          <button type="button" id="zoomOut" aria-label="zoom out" title="zoom out">−</button>
+          <button type="button" id="zoomFit" title="fit the world to the panel">fit</button>
+          <button type="button" id="zoomIn" aria-label="zoom in" title="zoom in">+</button>
+          <label><input id="follow" type="checkbox"> follow</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="tiles" id="tiles">
+      <div class="tile"><span class="k">births / deaths</span><span class="v" id="sBD">0 / 0</span></div>
+      <div class="tile"><span class="k">bug energy</span><span class="v" id="sBug">0</span></div>
+      <div class="tile"><span class="k">cell energy</span><span class="v" id="sCell">0</span></div>
+      <div class="tile"><span class="k">undistributed</span><span class="v" id="sRest">0</span></div>
+      <div class="tile"><span class="k">world energy</span><span class="v" id="sTotal">0</span></div>
+    </div>
+
+    <div class="chartArea">
+      <div class="chartHead">
+        <div class="seg" id="chartTabs" role="tablist" aria-label="chart series">
+          <button type="button" role="tab" data-series="population" aria-selected="true">Population</button>
+          <button type="button" role="tab" data-series="generation" aria-selected="false">Generation</button>
+          <button type="button" role="tab" data-series="evenness" aria-selected="false">Diversity</button>
+          <button type="button" role="tab" data-series="bugEnergy" aria-selected="false">Energy</button>
+        </div>
+        <div class="now"><span id="chartNowLabel">population</span> <b id="chartNowValue">0</b></div>
+      </div>
+      <svg id="chart" viewBox="0 0 600 108" preserveAspectRatio="none" role="img" aria-label="history of the selected series">
+        <defs>
+          <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="rgba(62,214,180,.30)"/>
+            <stop offset="1" stop-color="rgba(62,214,180,0)"/>
+          </linearGradient>
+        </defs>
+        <g class="grid"></g>
+        <path class="area"></path>
+        <path class="line"></path>
+        <g class="axis"></g>
+        <g class="cursor" hidden><line></line><circle r="2.5"></circle><text></text></g>
+      </svg>
+    </div>
+
+  </section>
+
+  <aside class="rail">
+    <div class="railTabs" id="tabs" role="tablist" aria-label="panel sections">
+      <button type="button" role="tab" data-tab="bug" aria-controls="tab-bug" aria-selected="false">Bug</button>
+      <button type="button" role="tab" data-tab="genome" aria-controls="tab-genome" aria-selected="false">Genome</button>
+      <button type="button" role="tab" data-tab="params" aria-controls="tab-params" aria-selected="true">Params</button>
+      <button type="button" role="tab" data-tab="world" aria-controls="tab-world" aria-selected="false">World</button>
+    </div>
+
+    <div id="tabbody" class="tabbody">
+
+      <section id="tab-bug" role="tabpanel" data-tab="bug" hidden>
+        <div id="bug" class="dim">click a bug in the dish to read its program</div>
+      </section>
+
+      <section id="tab-genome" role="tabpanel" data-tab="genome" hidden>
+        <fieldset>
+          <legend>gene variance</legend>
+          <div class="note">per gene position, the fraction of the population not holding the commonest
+            byte there — 0 means every bug agrees, 1 means none do</div>
+          <div id="varBox"><canvas id="variance" title="Bar height and colour are the spread at that
+    column's genes: taller and greener means the population holds the same byte there. Positions past
+    the end of every genome read 0 and are drawn as empty columns; they are not counted as fixed."></canvas></div>
+          <div class="note">click a column to set the <em>byte</em> the DNA-value view mode reads</div>
+          <div class="row">
+            <span>follow</span>
+            <span><label class="fld tight chk"><input id="varFollow" type="checkbox" checked> measure as it runs</label></span>
+          </div>
+          <div id="varMsg" class="msg">not measured yet</div>
+        </fieldset>
+        <fieldset>
+          <legend>the selected bug's program</legend>
+          <div class="dim" id="genomeHint">the genome strip appears here when a bug is selected</div>
+          <div id="genomeHost"></div>
+        </fieldset>
+      </section>
+
+      <section id="tab-params" role="tabpanel" data-tab="params" hidden>
+        <div id="params"></div>
+      </section>
+
+      <section id="tab-world" role="tabpanel" data-tab="world" hidden>
+        <fieldset>
+          <legend>new world</legend>
+          <div class="row"><span>preset</span><span><select id="preset"></select></span></div>
+          <div class="note" id="presetNote"></div>
+          <div class="row"><span>size</span>
+            <span><select id="size"><option value="240" selected>240 x 240</option><option value="480">480 x 480</option></select></span></div>
+          <div class="row"><span>seed</span>
+            <span><input id="seed" type="number" value="2024" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other"></span></div>
+          <div class="row"><span></span><span><button id="new" class="primary">New world</button></span></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>saved worlds</legend>
+          <div class="row stack">
+            <input id="saveName" type="text" maxlength="40" placeholder="name — blank uses the date and time"
+              autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-bwignore data-form-type="other" aria-label="save name">
+          </div>
+          <div class="row"><span></span><span>
+            <button id="save">Save</button>
+            <button id="export">Export</button>
+            <button id="import">Import</button>
+          </span></div>
+          <!-- Hidden rather than styled: the browser's own file picker is the import UI. -->
+          <input id="importFile" type="file" accept=".json,application/json" hidden>
+          <div id="savedList"></div>
+          <div id="savedMsg" class="msg">saved worlds live in this browser's storage</div>
+        </fieldset>
+      </section>
+
+    </div>
+
+    <footer>
+      Port of QtBugs @ fb3e2d4 · <a href="./DIVERGENCES.md">DIVERGENCES.md</a> lists every difference
+    </footer>
+  </aside>
+</main>
+
+<script>
+window.__errs = [];
+window.addEventListener('error', e => {
+  window.__errs.push(String(e.message) + ' @ ' + (e.filename || '?') + ':' + e.lineno + '\n' + (e.error && e.error.stack || ''));
+});
+window.addEventListener('unhandledrejection', e => window.__errs.push('REJECT ' + String(e.reason && e.reason.stack || e.reason)));
+</script>
 <script type="module" src="./app.mjs"></script>
 </body>
 </html>
