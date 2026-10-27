@@ -131,3 +131,29 @@ test('the empty inspector asks for a click only when there is something to click
   assert.match(lines[0], /click a bug in the dish/, 'and that is the string it should return');
   assert.match(lines[lines.length - 1], /return /, 'the last case must also return a sentence, not fall through');
 });
+
+test('the empty prompt is kept true while it is on screen, and only while', () => {
+  // Choosing the text is half of it: the world changes underneath the panel. Press
+  // Step on a fresh world and it fills with bugs, so a prompt written at tick 0 is
+  // stale by the next refresh -- and it was, which a browser check found after the
+  // first version of this fix looked finished.
+  //
+  // The other half is knowing when NOT to rewrite it: the inspector also reports a
+  // bug that died and a click that found nothing, and those are reports about a
+  // moment rather than statements about the world. Rewriting one of those into
+  // "click a bug in the dish" would erase what the reader was told.
+  const refresh = /function refreshEmptyInspector\(\) \{([\s\S]*?)\n\}/.exec(js);
+  assert.ok(refresh !== null, 'app.mjs should keep the empty prompt in step with the world');
+  assert.match(refresh[1], /if \(!inspectorEmpty\) return;/, 'it must only rewrite while the empty prompt is showing');
+  assert.match(refresh[1], /emptyInspectorText\(\) === bugInfoText/, 'and only when the text would actually change');
+
+  const show = /function showBugInfo\(text\) \{([\s\S]*?)\n\}/.exec(js);
+  assert.ok(show !== null, 'showBugInfo should still be the single writer of the panel');
+  assert.match(show[1], /inspectorEmpty = false;/, 'every other message must clear the empty flag, or a death report gets overwritten');
+
+  const rb = /function refreshBug\(\) \{([\s\S]*?)\n\}/.exec(js);
+  assert.ok(rb !== null, 'refreshBug should exist');
+  const nothingWatched = /if \(watched === null\) \{([\s\S]*?)\n  \}/.exec(rb[1]);
+  assert.ok(nothingWatched !== null, 'refreshBug should branch on there being no selection');
+  assert.match(nothingWatched[1], /refreshEmptyInspector\(\)/, 'and that is where the empty prompt gets refreshed');
+});

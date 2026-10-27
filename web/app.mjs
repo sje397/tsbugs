@@ -499,7 +499,7 @@ function adoptDish(next) {
   currentDish = null;
   bugView = null;
   history = [];
-  showBugInfo(emptyInspectorText());
+  showEmptyInspector();
   refreshGenome();
 
   applyViewMode();
@@ -724,8 +724,41 @@ function emptyInspectorText() {
   return `the world holds no bugs at tick ${dish.time} -- balance() refills it while it is short of energy, so press Run or Step`;
 }
 
+function showEmptyInspector() {
+  showBugInfo(emptyInspectorText());
+  inspectorEmpty = true;
+}
+
+/**
+ * Keeps the empty prompt true while it is on screen.
+ *
+ * The world changes under the panel: a step fills an empty world with bugs, and a
+ * die-off can empty one that was full. The prompt is only redrawn when its text
+ * would actually change, so this costs a string build per refresh and never
+ * touches the panel while a bug is selected or a death is being reported.
+ */
+function refreshEmptyInspector() {
+  if (!inspectorEmpty) return;
+  if (emptyInspectorText() === bugInfoText) return;
+  showEmptyInspector();
+}
+
+/**
+ * The text last written into the inspector, and whether it is the empty-world one.
+ *
+ * The empty prompt is the only message that describes the WORLD rather than a bug,
+ * so it is the only one that can go stale while it is on screen: press Step and the
+ * world fills with bugs while "the world holds no bugs yet" is still sitting there.
+ * Tracking which message is showing is what lets the refresh in `refreshBug` tell
+ * apart a prompt it may rewrite from a report about a bug that died.
+ */
+let bugInfoText = '';
+let inspectorEmpty = false;
+
 /** Replaces the panel with one line of text -- no bug, a dead bug, a missed click. */
 function showBugInfo(text) {
+  bugInfoText = text;
+  inspectorEmpty = false;
   bugView = null;
   bugNote = null;
   watchedHash = undefined;
@@ -892,7 +925,10 @@ function el(tag, className, text) {
 }
 
 function refreshBug() {
-  if (watched === null) return;
+  if (watched === null) {
+    refreshEmptyInspector();
+    return;
+  }
 
   const hash = locateWatched();
   if (hash === null) {
