@@ -40,6 +40,17 @@ export interface DecodedInstruction {
   name: string;
   /** The operand bytes, as stored. */
   operandBytes: number[];
+  /**
+   * Every byte of this row, with the genome slot it was read from — opcode first,
+   * then the operands in the order the VM reads them.
+   *
+   * These are not `address + n`: an instruction whose operands wrap the end of the
+   * genome reads them from the start, so the slots are not contiguous and not
+   * ordered. Anything that has to act on a specific byte (the inspector's editor
+   * does) needs the slot the sweep actually read, and re-deriving it from the
+   * row's address is how a wrapped row would be edited in the wrong place.
+   */
+  byteAddresses: number[];
   /** True when any operand byte had to be read from the start of the genome. */
   wrapped: boolean;
   /** For a two-byte operand: the address it forms, after the modulo the VM applies. */
@@ -73,11 +84,13 @@ export function decodeLinear(genome: Uint8Array, start = 0): DecodedInstruction[
     // incIp(): returns the old ip, then advances modulo the genome length. An
     // instruction at the end therefore reads operands from the beginning.
     const operandBytes: number[] = [];
+    const operandSlots: number[] = [];
     let wrapped = false;
     for (let i = 0; i < operandCount; i++) {
       const at = ip;
       ip = (ip + 1) % length;
       operandBytes.push(genome[at]);
+      operandSlots.push(at);
       // A read wrapped when its slot lies past the end of the genome, which is a
       // fact about the slot's position, not about the two addresses. Comparing
       // addresses instead (`at < address`) misses the case where a short genome's
@@ -102,6 +115,7 @@ export function decodeLinear(genome: Uint8Array, start = 0): DecodedInstruction[
       opcode,
       name: Instruction[opcode],
       operandBytes,
+      byteAddresses: [address, ...operandSlots],
       wrapped,
       operandAddress,
       operandAddressRaw,

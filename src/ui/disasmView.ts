@@ -33,21 +33,35 @@ export function isMidInstruction(listing: readonly DecodedInstruction[], index: 
   return index >= 0 && listing[index].address !== ip;
 }
 
-const hex2 = (n: number): string => n.toString(16).padStart(2, '0');
+export const hex2 = (n: number): string => n.toString(16).padStart(2, '0');
 
 export const hex4 = (n: number): string => n.toString(16).padStart(4, '0');
 
 /**
- * One listing row: the bytes as stored, the mnemonic, and — where they differ
- * from what the reader would guess — the operand address and the modulo.
+ * Every byte of a row, with the genome slot it occupies — the first part of the
+ * line, and the part an editor has to address.
+ *
+ * The slot comes from the row rather than from `address + n` because a wrapped
+ * instruction reads its operands from the start of the genome: there the slots go
+ * backwards, and an edit placed at the arithmetic address would land in a
+ * different instruction's code.
+ */
+export function rowBytes(ins: DecodedInstruction): Array<{ address: number; hex: string }> {
+  return [ins.byte, ...ins.operandBytes].map((value, i) => ({
+    address: ins.byteAddresses[i],
+    hex: hex2(value),
+  }));
+}
+
+/**
+ * The rest of the line: the mnemonic, then — where they differ from what the
+ * reader would guess — the operand address and the modulo.
  *
  * The stored byte is shown as well as the opcode because a genome written by
  * mutation holds byte values the machine never sees directly: `byte % MAX_I` is
  * what executes, and a bug whose genome is full of 245s runs POPs.
  */
-export function formatInstruction(ins: DecodedInstruction, maxI: number): string {
-  const bytes = [ins.byte, ...ins.operandBytes].map(hex2).join(' ').padEnd(11);
-
+export function rowTail(ins: DecodedInstruction, maxI: number): string {
   let operand = '';
   if (ins.operandAddress !== null) {
     operand = `  #${ins.operandAddress}`;
@@ -57,5 +71,11 @@ export function formatInstruction(ins: DecodedInstruction, maxI: number): string
   const wrapped = ins.wrapped ? '  [operands wrap]' : '';
   const modulo = ins.byte !== ins.opcode ? `  ${ins.byte}%${maxI}=${ins.opcode}` : '';
 
-  return `${bytes}  ${ins.name.padEnd(11)}${operand}${wrapped}${modulo}`;
+  return `${ins.name.padEnd(11)}${operand}${wrapped}${modulo}`;
+}
+
+/** One listing row as text: the bytes, in a fixed column, then the rest. */
+export function formatInstruction(ins: DecodedInstruction, maxI: number): string {
+  const bytes = rowBytes(ins).map((b) => b.hex).join(' ').padEnd(11);
+  return `${bytes}  ${rowTail(ins, maxI)}`;
 }

@@ -128,6 +128,29 @@ export class Bug {
     this.age++;
   }
 
+  /**
+   * Write one byte of this bug's program, and say what was there before.
+   *
+   * A byte of code lives in two places on a bug, and they are not the same place:
+   * the processor runs its own copy of the genome (processor.ts note 3), while the
+   * children this bug produces are built from its Dna. Writing only the machine
+   * changes what runs and is discarded the moment the world is saved and reloaded
+   * through the genome; writing only the Dna changes what is inherited and is not
+   * executed by the bug itself, which is the shape of a fix that appears to do
+   * nothing. An editor means both, so this writes both and the two arrays keep the
+   * length they started with — the processor is built from this Dna's buffer, so
+   * they are the same array length by construction (the check in `restore` is the
+   * same invariant, and a snapshot that broke it is refused there).
+   *
+   * The returned previous byte is what makes an edit reportable: the page says
+   * what it replaced, rather than asserting that something changed.
+   */
+  patchCode(address: number, value: number): number {
+    const previous = this.processor.writeRam(address, value);
+    this.dna.data[address] = value;
+    return previous;
+  }
+
   /** This bug, whole, as data that can be put back with `restore`. */
   snapshotState(): BugState {
     return {

@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { decodeLinear, type DecodedInstruction } from '../src/sim/disasm.js';
 import { MAX_I } from '../src/sim/processor.js';
 import { Rng } from '../src/sim/rng.js';
-import { formatInstruction, hex4, instructionIndexAt, isMidInstruction } from '../src/ui/disasmView.js';
+import { formatInstruction, hex4, instructionIndexAt, isMidInstruction, rowBytes, rowTail } from '../src/ui/disasmView.js';
 
 /** A genome of the requested length, from a stated seed. */
 function genomeOf(seed: number, length: number): Uint8Array {
@@ -134,7 +134,7 @@ test('a row whose operands wrap the genome does not steal the address it wraps t
 
 test('an instruction is shown with the bytes it stores, and says when they are not the opcode', () => {
   const plain: DecodedInstruction = {
-    address: 4, byte: 7, opcode: 7, name: 'PUSH', operandBytes: [3],
+    address: 4, byte: 7, opcode: 7, name: 'PUSH', operandBytes: [3], byteAddresses: [4, 5],
     wrapped: false, operandAddress: null, operandAddressRaw: null, length: 2,
   };
   assert.equal(formatInstruction(plain, MAX_I), '07 03        PUSH       ');
@@ -157,7 +157,7 @@ test('an instruction is shown with the bytes it stores, and says when they are n
 
 test('an operand address is shown, and a wrapped or moduloed one admits it', () => {
   const jump: DecodedInstruction = {
-    address: 9, byte: 8, opcode: 8, name: 'JMP', operandBytes: [1, 2],
+    address: 9, byte: 8, opcode: 8, name: 'JMP', operandBytes: [1, 2], byteAddresses: [9, 10, 11],
     wrapped: false, operandAddress: 258, operandAddressRaw: null, length: 3,
   };
   assert.match(formatInstruction(jump, MAX_I), /#258/);
@@ -173,4 +173,45 @@ test('addresses are shown in hexadecimal without losing leading zeros', () => {
   assert.equal(hex4(0), '0000');
   assert.equal(hex4(10), '000a');
   assert.equal(hex4(2793), '0ae9');
+});
+
+test('a row names the slot each of its bytes lives in, wrapped rows included', () => {
+  // The editor writes to a slot, so this is the mapping that decides which byte
+  // an edit lands on. A wrapped row is the only case where the slots are not
+  // `address + n`, and it is the case a reader cannot check by eye.
+  for (let seed = 1; seed <= 40; seed++) {
+    const genome = genomeOf(seed, 64);
+    for (const ins of decodeLinear(genome)) {
+      const bytes = rowBytes(ins);
+      assert.equal(bytes.length, ins.length, 'a row did not describe every byte it holds');
+      bytes.forEach((b, i) => {
+        assert.ok(b.address >= 0 && b.address < 64, `slot ${b.address} is outside the genome`);
+        assert.equal(
+          genome[b.address], [ins.byte, ...ins.operandBytes][i],
+          'the byte at that slot is not the byte the row shows',
+        );
+        assert.equal(b.hex, [ins.byte, ...ins.operandBytes][i].toString(16).padStart(2, '0'));
+      });
+
+      if (ins.wrapped) {
+        // The whole point: at least one operand was read from a slot numerically
+        // below the row's own start — the end of the genome was passed and the
+        // read came back round. An address computed without the modulo would be
+        // out of range instead, which the bound above already refuses.
+        const slots = bytes.slice(1).map((b) => b.address);
+        assert.ok(
+          slots.some((slot) => slot < ins.address),
+          'a wrapped row kept every operand slot above its own start',
+        );
+      }
+    }
+  }
+
+  // and the text is the two parts, so the parts and the line cannot drift apart
+  const listing = decodeLinear(genomeOf(2024, 500));
+  const multi = listing.find((ins) => ins.length === 3)!;
+  assert.equal(
+    formatInstruction(multi, MAX_I),
+    `${rowBytes(multi).map((b) => b.hex).join(' ').padEnd(11)}  ${rowTail(multi, MAX_I)}`,
+  );
 });

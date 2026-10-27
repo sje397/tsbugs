@@ -80,6 +80,21 @@
   #dis div { white-space: pre; }
   #dis div.cur { background: #24402a; }
   #dis div.mid { background: #3a3320; }
+  /* Every byte is its own edit, so every byte says so. The hover is what tells a
+     reader the listing is not a readout: the click that lands on a byte opens it. */
+  #dis span.b { cursor: pointer; border-radius: 2px; }
+  #dis span.b:hover { background: #2c3a44; outline: 1px solid #3d5260; }
+  #dis span.cursor { color: var(--hot); }
+  #dis input.byteEdit {
+    width: 2.4em; font: inherit; padding: 0 1px; text-align: center;
+    color: var(--text); background: #232a2f; border: 1px solid var(--hot); border-radius: 2px;
+  }
+  /* The mutation rate is a slider and an exact box side by side, because the
+     slider quantises and the box is what states a rate the slider cannot hold. */
+  .rate { display: inline-block; text-align: right; }
+  .rate input[type=range] { width: 96px; vertical-align: -4px; }
+  .rate input[type=number] { width: 88px; }
+  .rateNote { display: block; color: var(--dim); font-size: 11px; margin-top: 1px; }
   .dim { color: var(--dim); }
   /* The gene chart is a chart, not pixel art: it draws one bar per CSS pixel and
      sizes its own backing store, so it scales smoothly where the world does not. */

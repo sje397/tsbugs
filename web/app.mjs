@@ -23,11 +23,12 @@
 import { PetriDish, ViewMode } from '../dist/src/sim/dish.js';
 import { decodeLinear } from '../dist/src/sim/disasm.js';
 import { MAX_I } from '../dist/src/sim/processor.js';
-import { formatInstruction, hex4, instructionIndexAt, isMidInstruction } from '../dist/src/ui/disasmView.js';
+import { hex2, hex4, instructionIndexAt, isMidInstruction, rowBytes, rowTail } from '../dist/src/ui/disasmView.js';
 import {
   ENERGY_LAYOUTS, FIELD_LABELS, GROUP_NOTES, GROUP_ORDER, GROUP_TITLES,
   discoverGroups, label, missingFields, panelFields,
 } from '../dist/src/ui/paramPanel.js';
+import { SLIDER_MAX, sliderPosition, sliderToRate, summariseRate } from '../dist/src/ui/mutationScale.js';
 import { geneSpread } from '../dist/src/sim/variance.js';
 import { barIndex, chartColumns, chartSummary, geneAtColumn } from '../dist/src/ui/varianceChart.js';
 import { nearestBugAnywhere, pickNearestBug, pickRadiusCells } from '../dist/src/ui/pickBug.js';
@@ -291,12 +292,15 @@ function paramRow(key, value) {
     control.type = 'checkbox';
     control.checked = value === true;
   } else if (key === 'mutation') {
-    control = document.createElement('input');
-    control.type = 'range';
-    control.min = '0';
-    control.max = '1';
-    control.step = '0.005';
-    control.value = String(value);
+    // Two controls, because the slider cannot say the value: it quantises, so the
+    // slider is how a rate is reached and the box is what states one
+    // (mutationScale.ts). Neither reads its own output back — that is what would
+    // rewrite a typed 0.1234 into the slider's nearest grid point.
+    const cell = document.createElement('span');
+    cell.className = 'rate';
+    cell.append(...mutationControls(value));
+    row.append(cell);
+    return row;
   } else {
     control = document.createElement('input');
     control.type = 'number';
@@ -314,6 +318,84 @@ function paramRow(key, value) {
   cell.append(control);
   row.append(cell);
   return row;
+}
+
+/**
+ * The mutation rate's slider, its exact box, and the line that says what the rate
+ * means — "1 birth in 8,333 is mutated" is the form the number is reasoned about
+ * in, and it is what makes a fine adjustment visible while dragging.
+ */
+function mutationControls(rate) {
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = '0';
+  slider.max = String(SLIDER_MAX);
+  slider.step = '1';
+  const position = sliderPosition(rate);
+  slider.value = String(position ?? 0);
+  slider.disabled = position === null;
+  slider.title = position === null
+    ? `${rate} is not a rate this slider can hold — use the box`
+    : 'drag to a rate; the box is what states one exactly';
+
+  const box = document.createElement('input');
+  box.type = 'number';
+  box.min = '0';
+  box.step = 'any';
+  box.value = String(rate);
+  box.size = 8;
+  box.title = 'the rate exactly — any value, including ones the slider cannot reach';
+
+  // The number leads and is printed exactly as it stands, because this line sits
+  // beside the box the reader typed into: a rate printed to four figures while the
+  // world held six would be the panel disagreeing with itself.
+  const note = document.createElement('span');
+  note.className = 'rateNote';
+  note.textContent = summariseRate(rate);
+
+  // `input` while dragging, so the reading follows the thumb; `change` once, on
+  // release, so one drag is one write to the world rather than a hundred.
+  slider.addEventListener('input', () => {
+    note.textContent = summariseRate(sliderToRate(Number(slider.value)));
+  });
+  slider.addEventListener('change', () => applyMutation(sliderToRate(Number(slider.value))));
+
+  box.addEventListener('change', () => {
+    const text = String(box.value).trim();
+    const value = Number(text);
+    if (text === '' || !Number.isFinite(value)) {
+      message('mutation needs a number — nothing changed', true);
+      renderParams();
+      return;
+    }
+    if (value < 0 || value > 1) {
+      // A rate is the share of births that mutate, so the range is the definition
+      // rather than a limit: 2 is not a fast mutation rate, it is a typo.
+      message(`mutation runs from 0 to 1 — ${value} is not a share of births, so nothing changed`, true);
+      renderParams();
+      return;
+    }
+    applyMutation(value);
+  });
+
+  return [slider, box, note];
+}
+
+function applyMutation(rate) {
+  const update = dish.setParams({ mutation: rate });
+  const reading = summariseRate(rate);
+  if (update.refused.length > 0) {
+    message(`refused: ${update.refused.join('; ')} — nothing changed`, true);
+  } else if (update.ignored.includes('mutation')) {
+    message(`mutation = ${reading}, but only a new world reads it — rebuild to apply`, true);
+  } else if (update.deferred.includes('mutation')) {
+    message(`mutation = ${reading}; bugs born from now on are built with it`);
+  } else {
+    message(`mutation = ${reading} — live on the next tick`);
+  }
+  renderParams();
+  applyViewMode();
+  draw();
 }
 
 function applyParam(key, control) {
@@ -364,15 +446,27 @@ function message(text, bad = false, id = 'paramsMsg') {
  * real, it is how the machine runs, and the listing says so rather than
  * re-decoding from ip and pretending the stream is contiguous.
  */
-const INSPECT_ROWS_BEFORE = 8;
-const INSPECT_ROWS_AFTER = 26;
-
 let watched = null;      // the Bug under inspection, or null
 let watchedHash = undefined;
 let watchedDied = null;  // tick at which it was last seen alive, once it is gone
 let lastClick = { hash: -1, index: 0 };
 let clickedAt = null;    // cell the last click landed on, for the marker
 let pickedNear = null;   // how a non-direct selection was made, or null
+
+/**
+ * The panel as currently rendered: the decoded listing, the row elements, and the
+ * spans holding each live fact.
+ *
+ * Kept because the alternative is rebuilding the panel on every refresh, and a
+ * rebuild is what used to throw the reader back to the top of the code: the panel
+ * is redrawn from the stats tick, and each redraw reset the scroll position of a
+ * box they had scrolled into. A refresh now moves the cursor and rewrites a
+ * handful of text nodes; only a new selection or an edit rebuilds.
+ */
+let bugView = null;
+
+/** The last thing said about an edit, so a rebuild does not swallow it. */
+let bugNote = null;
 
 canvas.addEventListener('click', (event) => {
   const rect = canvas.getBoundingClientRect();
@@ -420,6 +514,7 @@ canvas.addEventListener('click', (event) => {
   watchedHash = target;
   watchedDied = null;
   pickedNear = from;
+  pauseForInspection();
   refreshBug();
   // Repaint now rather than waiting for the next frame: while the world is paused
   // nothing else draws, so the marker would be missing from exactly the state the
@@ -437,13 +532,33 @@ function locateWatched() {
   return found;
 }
 
+/** Replaces the panel with one line of text — no bug, a dead bug, a missed click. */
 function showBugInfo(text) {
+  bugView = null;
+  bugNote = null;
   const host = $('bug');
   host.textContent = '';
   const p = document.createElement('div');
   p.className = 'dim';
   p.textContent = text;
   host.append(p);
+}
+
+/**
+ * Selecting a bug stops the world.
+ *
+ * The panel describes a running machine: ip, cell, age, energy and the code under
+ * the cursor all move between one read and the next, so an inspected bug is a bug
+ * the reader is chasing. Holding the world is what makes the readout checkable —
+ * and it is what makes an edit make sense, since a byte written into a program that
+ * is already somewhere else is a change whose effect nobody can see.
+ *
+ * Run is the way out, and it is the same button that always means "continue".
+ */
+function pauseForInspection() {
+  if (!running) return;
+  running = false;
+  $('run').textContent = 'Run';
 }
 
 function refreshBug() {
@@ -456,93 +571,290 @@ function refreshBug() {
     return;
   }
 
-  const bug = watched;
-  const x = Math.trunc(hash / dish.height);
-  const y = hash % dish.height;
+  if (bugView === null || bugView.bug !== watched || bugView.size !== watched.dna.size) {
+    renderBugPanel(watched, hash);
+    return;
+  }
+  updateBugLive(watched, hash);
+}
+
+/** Everything the panel says about a bug that does not change while it is watched. */
+function renderBugPanel(bug, hash) {
   const genome = bug.dna.data;
-  const state = bug.processor.state;      // ip, sp, bp, accumulator
-  const ip = state.ip;
+  const state = bug.processor.state;
   const listing = decodeLinear(genome);
-  const at = instructionIndexAt(listing, ip);
+  const at = instructionIndexAt(listing, state.ip);
 
   const host = $('bug');
   host.textContent = '';
 
-  const here = dish.bugsAt(hash).length;
-  // Where the click landed, when that was not this bug's cell: without it the
-  // panel looks like it answered a click it ignored.
-  const selection = pickedNear === null ? null
-    : `nearest within ${pickedNear.radius} cells — ${pickedNear.distance.toFixed(1)} cells from your click at ${pickedNear.x}, ${pickedNear.y}`;
-  const facts = [
-    ['cell', `${x}, ${y}${here > 1 ? ` (${here} bugs here — click again for the next)` : ''}`],
-    ...(selection === null ? [] : [['selected', selection]]),
-    ['tick', String(dish.time)],
-    ['generation', String(bug.generation)],
-    ['age', String(bug.age)],
-    ['energy', String(bug.energy)],
-    ['children', String(bug.children)],
-    ['colour', `${bug.color % 252 + 1}`],
-    ['DNA', `${genome.length} bytes`],
-    ['mutation', bug.dna.mutationRate.toFixed(3)],
-    ['ip', `${ip}${isMidInstruction(listing, at, ip) ? ` (inside the instruction at ${listing[at].address})` : ''}`],
-    ['sp / bp', `${state.sp} / ${state.bp}`],
-    ['accumulator', String(state.accumulator)],
-  ];
-
   const grid = document.createElement('div');
   grid.className = 'stats';
-  for (const [key, value] of facts) {
+  const facts = new Map();
+
+  const fact = (key) => {
     const k = document.createElement('span');
     k.textContent = key;
     const v = document.createElement('span');
-    v.textContent = value;
-    // The colour row carries the swatch the world actually draws, resolved
-    // through the same palette table the blit uses.
-    if (key === 'colour') {
-      const rgb = PALETTE[bug.color % 252 + 1];
-      const swatch = document.createElement('span');
-      swatch.className = 'swatch';
-      swatch.style.background = `rgb(${rgb & 0xff}, ${(rgb >> 8) & 0xff}, ${(rgb >> 16) & 0xff})`;
-      v.prepend(swatch, document.createTextNode(' '));
-    }
     grid.append(k, v);
-  }
+    facts.set(key, v);
+    return v;
+  };
 
+  // The colour row carries the swatch the world actually draws, resolved through
+  // the same palette table the blit uses — so the number and the rectangle are
+  // updated together by the live refresh, rather than drifting apart.
+  const colour = fact('colour');
+  const swatch = document.createElement('span');
+  swatch.className = 'swatch';
+  colour.prepend(swatch, document.createTextNode(' '));
+
+  fact('cell');
+  fact('tick');
+  fact('generation');
+  fact('age');
+  fact('energy');
+  fact('children');
+  fact('DNA').textContent = `${genome.length} bytes`;
+  fact('mutation').textContent = summariseRate(bug.dna.mutationRate);
+  fact('ip');
+  fact('sp / bp');
+  fact('accumulator');
   host.append(grid);
+
+  const selection = pickedNear === null ? null
+    : `nearest within ${pickedNear.radius} cells — ${pickedNear.distance.toFixed(1)} cells from your click at ${pickedNear.x}, ${pickedNear.y}`;
+  if (selection !== null) {
+    const k = document.createElement('div');
+    k.className = 'note';
+    k.textContent = `selected: ${selection}`;
+    host.append(k);
+  }
 
   const head = document.createElement('div');
   head.className = 'note';
-  head.textContent = at < 0
-    ? `${listing.length} instructions decoded from address 0`
-    : `${listing.length} instructions decoded from address 0 — showing around ip`;
   host.append(head);
-
-  const from = Math.max(0, (at < 0 ? 0 : at) - INSPECT_ROWS_BEFORE);
-  const to = Math.min(listing.length, (at < 0 ? 0 : at) + INSPECT_ROWS_AFTER);
 
   const dis = document.createElement('div');
   dis.id = 'dis';
-  if (from > 0) dis.append(disRow('...', `${from} earlier instructions`, false));
-  for (let i = from; i < to; i++) {
-    const ins = listing[i];
-    dis.append(disRow(hex4(ins.address), formatInstruction(ins, MAX_I), i === at, isMidInstruction(listing, i, ip)));
+  const rows = [];
+  for (let i = 0; i < listing.length; i++) {
+    const row = bugRow(listing[i]);
+    rows.push(row);
+    dis.append(row);
   }
-  if (to < listing.length) dis.append(disRow('...', `${listing.length - to} more instructions`, false));
+  if (listing.length === 0) {
+    const row = document.createElement('div');
+    row.className = 'dim';
+    row.textContent = 'the genome is empty, so there is nothing to run';
+    dis.append(row);
+  }
   host.append(dis);
 
   const tail = document.createElement('div');
   tail.className = 'note';
-  tail.textContent = `VM steps/update ${bug.processor.stepsPerUpdate}, stack ${dish.worldParams.stackSize} bytes` +
-    ` — a stored byte above ${MAX_I - 1} runs as its modulo`;
+  tail.textContent = `${listing.length} instructions decoded from address 0 — click a byte to edit it` +
+    ` — VM steps/update ${bug.processor.stepsPerUpdate}, stack ${dish.worldParams.stackSize} bytes` +
+    `; a stored byte above ${MAX_I - 1} runs as its modulo`;
   host.append(tail);
+
+  const note = document.createElement('div');
+  note.className = 'msg';
+  host.append(note);
+
+  bugView = { bug, size: genome.length, listing, rows, facts, head, note, swatch, at: -1 };
+  updateBugLive(bug, hash);
+  // A fresh selection starts at the machine's position; after that the reader's
+  // scroll is theirs.
+  revealRow(at);
 }
 
-function disRow(address, text, current, midInstruction) {
+/** One listing row: the cursor column, the address, the bytes, and the decode. */
+function bugRow(ins) {
   const row = document.createElement('div');
-  if (current) row.className = midInstruction ? 'mid' : 'cur';
-  row.textContent = `${current ? (midInstruction ? '~' : '>') : ' '} ${address}  ${text}`;
+  const cursor = document.createElement('span');
+  cursor.className = 'cursor';
+  cursor.textContent = ' ';
+  row.append(cursor, document.createTextNode(` ${hex4(ins.address)}  `));
+
+  // Every byte is its own span, because every byte is its own edit. The slot comes
+  // from the decode rather than from the row's address: a wrapped instruction reads
+  // its operands from the start of the genome, and an edit placed by arithmetic
+  // would land in a different instruction's code.
+  const bytes = rowBytes(ins);
+  bytes.forEach((byte, i) => {
+    if (i > 0) row.append(document.createTextNode(' '));
+    const span = document.createElement('span');
+    span.className = 'b';
+    span.dataset.a = String(byte.address);
+    span.title = `address ${byte.address}`;
+    span.textContent = byte.hex;
+    row.append(span);
+  });
+  const width = bytes.map((byte) => byte.hex).join(' ').length;
+  row.append(document.createTextNode(' '.repeat(Math.max(0, 11 - width))), document.createTextNode(`  ${rowTail(ins, MAX_I)}`));
   return row;
 }
+
+/** The facts that change while the same bug is watched, and the cursor. */
+function updateBugLive(bug, hash) {
+  const view = bugView;
+  const state = bug.processor.state;
+  const x = Math.trunc(hash / dish.height);
+  const y = hash % dish.height;
+  const here = dish.bugsAt(hash).length;
+
+  view.facts.get('cell').textContent =
+    `${x}, ${y}${here > 1 ? ` (${here} bugs here — click again for the next)` : ''}`;
+  view.facts.get('tick').textContent = String(dish.time);
+  view.facts.get('generation').textContent = String(bug.generation);
+  view.facts.get('energy').textContent = String(bug.energy);
+  view.facts.get('age').textContent = String(bug.age);
+  view.facts.get('children').textContent = String(bug.children);
+  view.facts.get('colour').lastChild.textContent = ` ${bug.color % 252 + 1}`;
+  const rgb = PALETTE[bug.color % 252 + 1];
+  view.swatch.style.background = `rgb(${rgb & 0xff}, ${(rgb >> 8) & 0xff}, ${(rgb >> 16) & 0xff})`;
+
+  const at = instructionIndexAt(view.listing, state.ip);
+  const mid = isMidInstruction(view.listing, at, state.ip);
+  view.facts.get('ip').textContent = at < 0
+    ? `${state.ip} (past the program)`
+    : `${state.ip}${mid ? ` (inside the instruction at ${view.listing[at].address})` : ''}`;
+  view.facts.get('sp / bp').textContent = `${state.sp} / ${state.bp}`;
+  view.facts.get('accumulator').textContent = String(state.accumulator);
+
+  view.head.textContent = running
+    ? `running — click a bug and it holds still`
+    : `paused at tick ${dish.time} — Run continues, Step advances one tick`;
+
+  view.note.className = bugNote === null ? 'msg' : `msg${bugNote.bad ? ' bad' : ''}`;
+  view.note.textContent = bugNote === null ? '' : bugNote.text;
+
+  if (at !== view.at) moveCursor(at);
+}
+
+/** Move the marker to row `at`, saying whether a jump landed mid-instruction. */
+function moveCursor(at) {
+  const view = bugView;
+  if (view.at >= 0 && view.rows[view.at] !== undefined) {
+    view.rows[view.at].className = '';
+    view.rows[view.at].firstChild.textContent = ' ';
+  }
+  view.at = at;
+  if (at < 0 || view.rows[at] === undefined) return;
+
+  const mid = isMidInstruction(view.listing, at, view.bug.processor.state.ip);
+  view.rows[at].className = mid ? 'mid' : 'cur';
+  view.rows[at].firstChild.textContent = mid ? '~' : '>';
+  // The view does not follow the cursor after the panel is built. The cursor moves
+  // whenever the machine runs or steps, and a listing that scrolled itself back to
+  // the cursor would undo the reader's scroll — the same complaint as a rebuild
+  // that resets to the top, arriving from the other direction. The row goes
+  // highlighted; where the listing is scrolled is the reader's to set.
+}
+
+/**
+ * Scroll the listing to a row, and only as far as it takes to show it.
+ *
+ * Done by moving `scrollTop` rather than with scrollIntoView, which walks every
+ * scrollable ancestor: revealing a row inside the panel would also drag the page
+ * down to it, and the panel is a sidebar the reader may be working beside.
+ */
+function revealRow(at) {
+  const view = bugView;
+  const dis = $('dis');
+  if (view === null || dis === null || at < 0) return;
+  const row = view.rows[at];
+  if (row === undefined) return;
+
+  const box = dis.getBoundingClientRect();
+  const line = row.getBoundingClientRect();
+  if (line.top < box.top) dis.scrollTop -= box.top - line.top;
+  else if (line.bottom > box.bottom) dis.scrollTop += line.bottom - box.bottom;
+}
+
+/**
+ * Write one byte of the watched bug's program.
+ *
+ * The whole panel is rebuilt afterwards rather than patched, and that is the
+ * honest cost of an edit: an opcode's length depends on which instruction it is,
+ * so changing one byte re-decodes every row after it in the listing — and a row
+ * that kept its old decode would show code the machine is not running. The scroll
+ * position is carried across the rebuild, so the row being edited stays put.
+ */
+function writeByte(address, value) {
+  const bug = watched;
+  const previous = bug.patchCode(address, value);
+  const scroll = $('dis')?.scrollTop ?? 0;
+  const hash = locateWatched();
+  if (hash === null) {
+    watchedDied ??= dish.time;
+    showBugInfo(`this bug is gone — it died around tick ${watchedDied}. Click another.`);
+    return;
+  }
+
+  bugNote = {
+    text: previous === value
+      ? `address ${hex4(address)} already held ${hex2(value)} — written anyway, nothing changed`
+      : `wrote ${hex2(value)} at ${hex4(address)}, was ${hex2(previous)} — ` +
+        'into the program this bug runs and the genome its children inherit',
+    bad: false,
+  };
+  renderBugPanel(bug, hash);
+  const dis = $('dis');
+  if (dis !== null) dis.scrollTop = scroll;
+  draw();
+}
+
+/** Turn a byte into the box that edits it, and put it back if nothing is written. */
+function beginByteEdit(span) {
+  const address = Number(span.dataset.a);
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'byteEdit';
+  input.value = span.textContent;
+  input.spellcheck = false;
+  input.setAttribute('aria-label', `byte at address ${address}`);
+
+  // Enter, blur and the rebuild that follows a write can all arrive for one edit,
+  // and a second write of the same address would report the byte it had just
+  // written as the byte it replaced.
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    if (commit) {
+      const text = String(input.value).trim();
+      if (!/^[0-9a-fA-F]{1,2}$/.test(text)) {
+        bugNote = { text: `"${text}" is not a byte, so ${hex4(address)} was left alone`, bad: true };
+        input.replaceWith(span);
+        updateBugLive(watched, locateWatched() ?? watchedHash);
+        return;
+      }
+      writeByte(address, Number.parseInt(text, 16));
+      return;   // the rebuild has already replaced the input
+    }
+    input.replaceWith(span);
+  };
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+// One delegated listener for the panel, since its rows are rebuilt on every edit.
+$('bug').addEventListener('click', (event) => {
+  if (watched === null || bugView === null) return;
+  const span = event.target.closest('span.b');
+  if (span === null || !span.dataset.a) return;
+  beginByteEdit(span);
+});
 
 // ---------------------------------------------------------------- gene chart
 /**
