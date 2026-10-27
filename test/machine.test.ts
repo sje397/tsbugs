@@ -34,7 +34,7 @@ import { Rng } from '../src/sim/rng.js';
 import {
   DIRECTION_NAMES, SPLIT_THRESHOLD,
   decisionOf, describeMove, dirFromOutput, directionName, directionOffset,
-  registersOf, sensesOf, snapshotOf, tickDelta,
+  registersOf, senseFrame, sensesOf, snapshotOf, tickDelta,
 } from '../src/ui/machine.js';
 
 const STACK_SIZE = 32;
@@ -148,6 +148,100 @@ test('the sense window is placed by wrapX/wrapY order, not by an assumed grid', 
 
   // The centre of the window is the bug's own cell, not a hole.
   assert.equal(senses.vision[1][1], 5);
+});
+
+// --------------------------------------------------- where the window was taken
+
+/**
+ * The window is a tick behind the dish, and the panel has to say so.
+ *
+ * These are the assertions for the direction of that offset. A bug that has moved
+ * senses from the cell it left, so the panel's centre is one step back — and a
+ * one-cell offset in a 3x3 grid reads as a directional error rather than as lag:
+ * the reader sees food one row away from where it is drawn and concludes the
+ * compass is wrong, which is what happened (a bug beside a food cell, the panel
+ * calling it north).
+ */
+
+test('the sample cell is the inverse of the move the dish applies', () => {
+  // Round-trip against wrapX/wrapY — the functions the move phase itself uses —
+  // so this cannot agree with a wrong table. The edges are included because that
+  // is where a wrap makes the inverse non-obvious: a bug standing at x = 0 did
+  // not come from x = -1, it came from the far side.
+  const cases: Array<{ x: number; y: number; width: number; height: number }> = [
+    { x: 5, y: 7, width: 11, height: 13 },
+    { x: 0, y: 0, width: 11, height: 13 },
+    { x: 10, y: 12, width: 11, height: 13 },
+    { x: 0, y: 12, width: 11, height: 13 },
+  ];
+
+  for (const { x, y, width, height } of cases) {
+    for (let dir = 0; dir < DIRECTION_NAMES.length; dir++) {
+      // Where the bug ends up having moved `dir` from (x, y) ...
+      const nowX = wrapX(dir, x, width);
+      const nowY = wrapY(dir, y, height);
+      const frame = senseFrame({ x: nowX, y: nowY }, dir, width, height);
+
+      assert.deepEqual(
+        frame.at, { x, y },
+        `a bug that moved ${directionName(dir)} to ${nowX},${nowY} (from ${x},${y} on ${width}x${height}) ` +
+        `was sampled at ${frame.at.x},${frame.at.y}`,
+      );
+      assert.equal(frame.movedDir, dir === DIR_STAY ? DIR_STAY : dir);
+    }
+  }
+});
+
+test('a bug that moved south was sampled from the cell north of it', () => {
+  // The reported symptom, spelled out in coordinates. South is dir 7 and y grows
+  // southward (see the header), so a bug at 10,20 that moved south came from
+  // 10,19 — and the cell it now occupies is therefore the SOUTH slot of the window
+  // it is looking at, not the centre.
+  const frame = senseFrame({ x: 10, y: 20 }, 7, 64, 64);
+  assert.deepEqual(frame.at, { x: 10, y: 19 });
+  assert.equal(frame.moved, true);
+  assert.equal(directionName(frame.movedDir), 'south');
+
+  // The consequence that made the panel look mirrored: the bug's own current cell
+  // sits in slot 7 of the sampled window, one row below the centre the panel used
+  // to label "its own cell".
+  assert.equal(wrapX(7, frame.at.x, 64), 10);
+  assert.equal(wrapY(7, frame.at.y, 64), 20);
+
+  // And the mirror image, because a sign error in one direction only is exactly
+  // the bug this is guarding: a bug that moved north was sampled from the south.
+  const north = senseFrame({ x: 10, y: 20 }, 1, 64, 64);
+  assert.deepEqual(north.at, { x: 10, y: 21 });
+  assert.equal(wrapY(1, north.at.y, 64), 20, "the bug's own cell is the north slot");
+});
+
+test('a bug that stayed is sampled where it stands', () => {
+  const frame = senseFrame({ x: 3, y: 4 }, DIR_STAY, 8, 8);
+  assert.deepEqual(frame.at, { x: 3, y: 4 });
+  assert.deepEqual(frame.current, { x: 3, y: 4 });
+  assert.equal(frame.moved, false);
+  assert.equal(frame.movedDir, DIR_STAY);
+});
+
+test('eight directions give eight different sample cells', () => {
+  // A transposed inverse, or one that reused the direction instead of mirroring
+  // it, would send two directions to the same cell — which a per-direction
+  // assertion against the same source function could still miss.
+  const from = { x: 6, y: 6 };
+  const seen = new Map<string, number>();
+  for (let dir = 0; dir < DIRECTION_NAMES.length; dir++) {
+    if (dir === DIR_STAY) continue;
+    const at = senseFrame(from, dir, 13, 13).at;
+    const key = `${at.x},${at.y}`;
+    assert.equal(seen.has(key), false, `directions ${seen.get(key)} and ${dir} both sampled ${key}`);
+    seen.set(key, dir);
+  }
+  // ... and all eight are inside the world, which is what makes the round trip
+  // above meaningful at an edge rather than a coincidence of arithmetic.
+  for (const key of seen.keys()) {
+    const [x, y] = key.split(',').map(Number);
+    assert.ok(x >= 0 && x < 13 && y >= 0 && y < 13, `${key} is outside a 13x13 world`);
+  }
 });
 
 // --------------------------------------------------------------- own energy

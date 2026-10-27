@@ -65,6 +65,7 @@
  */
 
 import { DIR_STAY, SENSE_SLOTS, type Bug } from '../sim/bug.js';
+import { wrapX, wrapY } from '../sim/dish.js';
 import type { Processor } from '../sim/processor.js';
 
 /** The sense window is square; `SENSE_SLOTS` is its area, not its side. */
@@ -146,6 +147,61 @@ export function sensesOf(processor: Processor): Senses {
   const low = processor.readIn(2 * SENSE_SLOTS + 1);
 
   return { vision, energy, ownEnergy: high * 256 + low, ownEnergyBytes: [high, low] };
+}
+
+/**
+ * Which cell the nine slots were sampled at, given where the bug is now.
+ *
+ * THE WINDOW IS ONE TICK BEHIND THE DISH, and it has to be. A tick samples a
+ * cell's window and hands it to the bugs standing there, and only afterwards does
+ * the move phase apply their moves (dish.ts: `sampleSenses` in the run phase,
+ * then the move loop). The dish is drawn from the state after the move, so when
+ * the picture shows a bug beside a food cell, the panel's slots describe the
+ * neighbourhood it has just left: its centre is one step back, along the
+ * direction it last moved.
+ *
+ * That reads as a MIRROR rather than as a lag. A one-cell offset puts a reading
+ * in the row next to the one the reader is looking at, and a 3x3 grid carries no
+ * clue about which row moved — "the food is south of the bug, the panel calls it
+ * north" is the same defect as "the panel is one row out", seen from one row
+ * further away. The fix is not to re-sample: the window must be the one the
+ * decision shown beside it was made from, or the panel stops being a machine
+ * inspector and becomes a second, differently-timed view of the world. So the
+ * panel says where the window was taken instead.
+ *
+ * `dir` is the move `update()` decided and the move phase then applied, so the
+ * sample cell is one inverse step away. A 3x3 index is its own mirror under
+ * `8 - dir`, which is why the same `wrapX`/`wrapY` pair inverts the move rather
+ * than a second table of opposite directions drifting out of step with the first.
+ *
+ * CAVEAT, and it is the caller's to respect: `dir` only describes the last tick
+ * if the bug actually ran that tick. A bug born this tick has never been sampled
+ * (its inputs are all zero) and has not chosen a move, so a panel must not
+ * present this frame for `age === 0`.
+ */
+export interface SenseFrame {
+  /** The cell the nine slots were sampled at. */
+  at: { x: number; y: number };
+  /** The cell the dish draws the bug in now. */
+  current: { x: number; y: number };
+  /** True when the bug has moved since it sensed, so the window is a step behind. */
+  moved: boolean;
+  /** The move that took it away; `DIR_STAY` when it has not moved. */
+  movedDir: number;
+}
+
+/** The cell the sense window was taken at, from the cell the bug is in now. */
+export function senseFrame(
+  current: { x: number; y: number },
+  dir: number,
+  width: number,
+  height: number,
+): SenseFrame {
+  const d = normaliseDirection(dir);
+  const inverse = DIRECTION_NAMES.length - 1 - d;
+  const at = { x: wrapX(inverse, current.x, width), y: wrapY(inverse, current.y, height) };
+  const moved = at.x !== current.x || at.y !== current.y;
+  return { at, current: { x: current.x, y: current.y }, moved, movedDir: moved ? d : DIR_STAY };
 }
 
 /**

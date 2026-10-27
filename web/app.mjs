@@ -50,7 +50,7 @@ import {
 } from '../dist/src/ui/worldView.js';
 import { DEFAULT_PRESET_ID, PRESETS, presetById, presetParams } from '../dist/src/ui/presets.js';
 import {
-  decisionOf, registersOf, sensesOf, snapshotOf, tickDelta,
+  decisionOf, directionName, registersOf, senseFrame, sensesOf, snapshotOf, tickDelta,
 } from '../dist/src/ui/machine.js';
 import { CLASS_LABEL, CLASS_ORDER, genomeStrip, opClass } from '../dist/src/ui/genomeMap.js';
 import { genePool } from '../dist/src/ui/genePool.js';
@@ -970,6 +970,13 @@ function renderBugPanel(bug, hash) {
   }
   host.append(sensesHost);
 
+  // The grid is a tick behind the dish, because the window it shows is the one the
+  // decision below was made from. A caption rather than a tooltip: the offset is
+  // the thing most likely to be read as a mirror, so it has to be visible without
+  // a hover (machine.ts `senseFrame` says why re-sampling is the wrong fix).
+  const sensesNote = el('div', 'note');
+  host.append(sensesNote);
+
   // -- the slow facts ----------------------------------------------------
   const kv = el('div', 'kv');
   const facts = new Map();
@@ -1030,6 +1037,7 @@ function renderBugPanel(bug, hash) {
     facts,
     regRef,
     senseCells,
+    sensesNote,
     who: { pill, id },
     decision,
     delta,
@@ -1148,7 +1156,18 @@ function updateBugLive(bug, hash) {
   view.snap = snap;
 
   // -- what it can see -------------------------------------------------
+  // The frame first: the grid's centre is the cell the window was TAKEN at, which
+  // is one step behind the cell the facts below report. A bug that has never run
+  // has no sample at all, and claiming one would be worse than saying nothing.
   const senses = sensesOf(bug.processor);
+  const frame = bug.age === 0
+    ? null
+    : senseFrame({ x, y }, bug.dir, dish.width, dish.height);
+  view.sensesNote.textContent = frame === null
+    ? 'not sampled yet — this bug has not run a tick, so its inputs are still zero'
+    : frame.moved
+      ? `sensed at ${frame.at.x}, ${frame.at.y} — one tick behind: it has since moved ${directionName(frame.movedDir)} to ${x}, ${y}`
+      : `sensed at ${frame.at.x}, ${frame.at.y} — the cell it is standing in`;
   for (let slot = 0; slot < 9; slot++) {
     const row = Math.trunc(slot / 3);
     const col = slot % 3;
@@ -1164,7 +1183,9 @@ function updateBugLive(bug, hash) {
     cell.cell.style.color = empty ? '#8f9caa' : onColour(hue);
     cell.value.textContent = String(energy);
     cell.cell.title = `slot ${slot}: ${colourName(hue)}, energy ${energy}`
-      + (slot === 4 ? ' — its own cell' : '');
+      + (slot === 4
+        ? frame !== null && frame.moved ? ' — the cell it was in when it sensed' : ' — its own cell'
+        : '');
   }
 
   // -- the slow facts --------------------------------------------------
