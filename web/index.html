@@ -47,8 +47,10 @@
      "240 x 2" once the dropdown arrow and padding are taken out of it). */
   #size { width: 112px; }
   /* Same problem with the save name: its placeholder says what an empty box does,
-     and at 90px the sentence is cut off, so the hint is unreadable. */
-  #saveName { width: 168px; }
+     and at 90px the sentence is cut off, so the hint is unreadable. Wide enough
+     for the placeholder and for a date-and-time name if one is pasted back in
+     (19 characters), which is the longest default this page produces. */
+  #saveName { width: 186px; }
   .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
   .modes label { color: var(--text); cursor: pointer; }
   .modes input { vertical-align: -1px; }
@@ -175,7 +177,7 @@ the end of every genome read 0 and are drawn as empty columns; they are not coun
   <fieldset>
     <legend>saved worlds</legend>
     <div class="row"><span>name</span>
-      <span><input id="saveName" type="text" maxlength="40" placeholder="blank = tick number"></span></div>
+      <span><input id="saveName" type="text" maxlength="40" placeholder="blank = date and time"></span></div>
     <div class="row"><span></span><span>
       <button id="save">Save</button>
       <button id="export">Export</button>

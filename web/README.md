@@ -115,6 +115,18 @@ is the envelope's own fields. Browser storage is a few megabytes, so the store h
 handful. A save that does not fit says so in words, and a failed write leaves the world
 it was replacing exactly where it was: `setItem` either lands or throws.
 
+**A save is named for when it was made, not for where the world was in its run.** An
+empty name box produces a local timestamp (`2026-10-27 13:33:07`) instead of the tick.
+A tick is not a label: two different worlds reach tick 200, and the same world is at
+tick 200 exactly once, so a list of tick names read as a sequence that had never
+happened. It is local time because the list is read by whoever pressed Save, and the
+unambiguous instant is already inside the entry as `savedAt` (ISO 8601, UTC). Two saves
+inside the same second would collide — save, step, save is an ordinary thing to do — so
+the second takes a ` (2)` suffix rather than raising the overwrite prompt about a world
+it has nothing to do with. The box is left as the person left it: after a default save
+it is empty again, so the next Save is a new entry, while a typed name stays so
+re-saving that world is one click.
+
 ## What is verified, and how
 
 The claim "this is the same simulation as the Node build" is not an impression;
@@ -132,6 +144,8 @@ bug energy and energy energy. Same inputs, same hash, or the port is not faithfu
 | A corrupt entry cannot hide the rest | three entries written where the store looks — truncated JSON, valid JSON of another shape, and a matching header with no world — each listed and named (`unreadable: …`, `not a saved world`, `incomplete: carries no world`), none with a Load button; loading one states the reason and leaves the current world untouched |
 | Import runs through the file input, not a side door | a 150-tick world exported, rebuilt from nothing, then handed to the page's own `change` handler: back at tick 150 with 96 bugs and an equal fingerprint; a `.json` of another shape refused `not a tsbugs world: not a saved world (format undefined)`, world unchanged |
 | Export hands the browser a real file | the blob is 940,638 chars of `application/json` at tick 1510 and the anchor says `download="tsbugs-sweep-tick1510.json"` |
+| A save is named for when it was made | blank box → `2026-10-27 13:33:07`; a second save in the same second → `2026-10-27 13:33:07 (2)`, so no overwrite prompt appears about a different world; the box is empty again after a default save and still holds `my run` after a typed one; the export anchor reads `tsbugs-2026-10-27-13-33-11-tick205.json` |
+| The naming rules are falsified, not just followed | `test/worldName.test.ts` writes the same two instants without zero padding and shows them sorting the wrong way (`2026-10-1` above `2026-9-30`), which is the failure the padding prevents; removing the collision suffix fails three tests, and removing the padding fails two |
 | The text format round trips | re-encoding a decoded world gives the same bytes, then 200 ticks with no divergence — and `test/snapshot.test.ts` falsifies it twice (one step of stream offset, one changed genome byte) |
 
 The fingerprint is the useful one: it covers 57,600 indices *and* the counters,

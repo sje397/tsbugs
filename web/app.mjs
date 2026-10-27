@@ -38,6 +38,7 @@ import {
   WORLD_KEY_PREFIX, bytesToBase64, decodeWorld, deleteWorld, encodeWorld, isValidWorldName,
   listWorlds, loadWorld, saveWorld, storageUsed,
 } from '../dist/src/ui/worldStore.js';
+import { defaultWorldName, uniqueWorldName } from '../dist/src/ui/worldName.js';
 
 // ---------------------------------------------------------------- palette
 // petriwidget.cpp:10-29, exactly: 0 black, 1..252 a red -> yellow -> green ramp
@@ -737,10 +738,20 @@ function slug(text) {
   return text.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'world';
 }
 
-/** The name box, or the tick this world is at when the box is empty. */
+/** The name box, or the date and time of this save when the box is empty.
+ *
+ *  A tick number was what this used to fall back to, and it made a poor label: it
+ *  says where the world is in its own run rather than when the save was made, so
+ *  two different worlds could both be "tick 200" and the list read as a sequence
+ *  that had never happened. The collision case is real rather than theoretical —
+ *  save, step, save is an ordinary thing to do — so the second save inside a
+ *  second takes a suffix instead of raising the overwrite prompt about a world it
+ *  has nothing to do with. */
 function worldName() {
   const typed = $('saveName').value.trim();
-  return typed === '' ? `tick ${dish.time}` : typed;
+  if (typed !== '') return typed;
+  const taken = (name) => storage !== null && storage.getItem(WORLD_KEY_PREFIX + name) !== null;
+  return uniqueWorldName(defaultWorldName(new Date()), taken);
 }
 
 function saveCurrent() {
@@ -759,7 +770,12 @@ function saveCurrent() {
   }
   try {
     const saved = saveWorld(storage, name, dish.snapshot());
-    $('saveName').value = name;
+    // The box is left as the person left it. It used to be filled with the name
+    // that was just used, which was right when the name was derived from the world
+    // (a second Save meant "write this again"); with a timestamp it would mean the
+    // next Save silently replaces the entry it just made, and the date-and-time
+    // naming would produce exactly one entry per session. A typed name is still in
+    // the box, so re-saving a named world stays one click.
     savedMessage(`saved "${name}" — tick ${saved.tick}, ${saved.population} bugs, ${kilobytes(saved.storedBytes)}`);
     refreshSaved();
     return saved;
