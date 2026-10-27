@@ -81,6 +81,23 @@ const PALETTE = (() => {
 const cssColor = (packed) =>
   `rgb(${packed & 0xff}, ${(packed >>> 8) & 0xff}, ${(packed >>> 16) & 0xff})`;
 
+/** What a colour byte means, in words. One function because two surfaces show it
+ *  -- the world's hovertip and the bug panel's sense grid -- and they must not be
+ *  able to disagree about whether a magenta cell is a bug or a poison pile.
+ *  253 is named rather than omitted: it is reserved and unreachable, and saying so
+ *  is cheaper than a reader wondering why the 254 threshold is worth stating. */
+const colourName = (value) =>
+  value === BKG_COLOR ? 'empty'
+    : value === POISON_COLOR ? 'poison'
+      : value === ENERGY_COLOR ? 'energy cell'
+        : value === 253 ? 'cyan (reserved)'
+          : `bug colour ${value}`;
+
+/** A sense cell is drawn on a bright fill, so its text has to contrast with the
+ *  fill rather than with the page. The blue of an energy cell is the only dark
+ *  one -- dark text on it measures 2.2:1 -- so it is the only one that goes light. */
+const onColour = (value) => (value === ENERGY_COLOR ? '#e8eef4' : '#0a0c0f');
+
 // ---------------------------------------------------------------- elements
 const $ = (id) => {
   const el = document.getElementById(id);
@@ -265,11 +282,7 @@ function renderHud(cell) {
   const hash = cell.x * dish.height + cell.y;
   const here = dish.bugsAt(hash).length;
   const value = dish.viewCol[hash];
-  const what = value === BKG_COLOR ? 'empty'
-    : value === POISON_COLOR ? 'poison'
-      : value === ENERGY_COLOR ? 'energy cell'
-        : value === 253 ? 'cyan (reserved)'
-          : `bug colour ${value}`;
+  const what = colourName(value);
   hud.textContent = '';
   const line = (k, v) => {
     const div = document.createElement('div');
@@ -1076,10 +1089,14 @@ function updateBugLive(bug, hash) {
     const energy = senses.energy[row][col];
     const cell = view.senseCells[slot];
     const empty = hue === BKG_COLOR;
-    cell.cell.style.background = empty ? '#0d1114' : cssColor(PALETTE[Math.min(252, Math.max(1, hue))]);
-    cell.cell.style.color = empty ? '#8f9caa' : '#0a0c0f';
+    // The two sentinels are readings, not noise: 254 is a poison pile and 255 an
+    // energy cell, and the dish draws those magenta and blue. Clamping them into
+    // the bug ramp -- which this did, at 252 -- showed a poison cell as an
+    // ordinary bug, and a bug that dies on it would have looked inexplicable.
+    cell.cell.style.background = empty ? '#0d1114' : cssColor(PALETTE[hue]);
+    cell.cell.style.color = empty ? '#8f9caa' : onColour(hue);
     cell.value.textContent = String(energy);
-    cell.cell.title = `slot ${slot}: vision ${hue}${empty ? ' (empty)' : ''}, energy ${energy}`
+    cell.cell.title = `slot ${slot}: ${colourName(hue)}, energy ${energy}`
       + (slot === 4 ? ' — its own cell' : '');
   }
 
