@@ -119,7 +119,7 @@ for the GPU work, not a preference.
   that "restored" that line would consume an extra draw per reproduction.
 - The permanently disabled `spinDNAVal` (the .ui sets `enabled=false` and no code
   re-enables it — in the shipped app the DNA byte is reachable only by clicking the
-  histogram). Revisiting this belongs with the UI controls.
+  histogram). Revisited in §18, where the port makes every byte of the listing editable.
 
 ## 8. Fixed: terrain renders monotonically — and diverged: it stores a signed byte
 
@@ -667,3 +667,53 @@ the RAM diff exists, and `restore rebuilds the pixel cache rather than loading i
 reason the palette is not in the file. The two version constants are covered separately:
 `restore refuses a format version it does not know` (model) and `the decoder refuses a text
 that is not a world, naming the field` (text).
+
+## 18. Added: any byte of a bug's program is editable where it is shown
+
+**Upstream.** There is no such control. `spinDNAVal` exists in `main_window.ui` with
+`enabled=false` and nothing in the code re-enables it (§7), so the only route to a DNA
+byte is the route the histogram gives: pick a value for a position, outside the listing.
+
+**The port.** Every byte in the disassembly is a click target. Clicking one turns it into
+a two-hex-digit box; Enter writes it, Escape leaves it alone, and anything that is not one
+or two hex digits is refused in words (`"zz" is not a byte, so 0a1f was left alone`)
+rather than parsed to something surprising. The write goes through `Bug.patchCode`, which
+sets **two** copies: the program the machine is running (`Processor.writeRam`) and the
+genome a child inherits (`dna.data`). Both are what the panel claims when it says *into
+the program this bug runs and the genome its children inherit*.
+
+**What that means, stated rather than discovered.** A machine's RAM is not its genome:
+STORE writes RAM, and RAM is described in `processor.ts` as "the genome as it stood at
+construction, plus any STORE". So at an address the running program has stored to, the two
+copies disagree, and an edit sets both — the byte you type is what the machine will execute
+*and* what a child will be born with. The panel's *was* figure is the RAM byte, because
+that is the copy that was in use. This is the honest reading of "patch the code": it is a
+genome edit that also reaches the running machine, not a poke at RAM that leaves the
+heritage alone. A reader who wants a one-generation change is asking for something the
+port does not offer, and should know that from here rather than from a surprise.
+
+**Two consequences that were not free.** A write rebuilds the whole panel, because an
+opcode's length depends on which instruction it is: changing one byte re-decodes every row
+after it, and a row that kept its old decode would show code the machine is not running.
+The listing's scroll is captured before the rebuild and restored after it, so the row being
+edited stays put (measured at 20,000 px on the live page, before and after). And the panel
+skips a rebuild on the ordinary 500 ms refresh; it rebuilds only when the watched bug or its
+genome length changes, which is what makes a scrolled listing usable at all.
+
+**Addresses wrap, and the row says so.** An instruction near the end of a genome reads its
+operands from the start, so a later slot can be numerically *below* its own address.
+`decodeLinear` carries the slot for every byte rather than recomputing `address + 1 + i`,
+because the unwrapped form does not give a plausible wrong slot — it gives one past the end
+of the genome, which `writeRam` throws on. `web/test/page.test.ts` and the decode tests pin
+this: writing the unwrapped expression fails `a row names the slot each of its bytes lives
+in, wrapped rows included` with `slot 64 is outside the genome`.
+
+**What executes is not what is stored.** A stored byte above `MAX_I - 1` runs as its
+modulo, and the listing shows the instruction that will actually run while the byte slots
+show what is stored. So a byte can be edited to `255` and be shown as the instruction `255
+% MAX_I` selects — the two numbers next to each other are not a contradiction, and the tail
+of the panel says so in words.
+
+**DIVERGENCE risk accepted:** this is a feature the original does not have, in the one place
+the original deliberately disabled. It is recorded here rather than in a changelog because a
+reader comparing the two programs should meet it as a difference, not as a bug.
