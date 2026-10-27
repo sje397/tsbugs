@@ -78,7 +78,7 @@ two worlds built from the same seed diverge after one tick, so restoring from a 
 would replay and still arrive somewhere else. A snapshot carries the RNG's live
 position, and the claim that a loaded world *continues* is checked rather than
 asserted: a world saved at tick 200, rebuilt from nothing, loaded and stepped once has
-exactly the fingerprint of a run that never stopped (`0x259e7cc0` at tick 201 in the
+exactly the fingerprint of a run that never stopped (`0xbbf34742` at tick 201 in the
 browser). `test/snapshot.test.ts` holds the same line for 200 ticks from Node, and
 carries two falsifications — one step of stream offset must diverge within twenty
 ticks, or the comparison cannot see anything and proves nothing. The interface is
@@ -107,10 +107,13 @@ binary with a bare leading int, read at `>= 2` and `>= 3` (`main_window.cpp:216`
 — which told a reader nothing about the format and could not tell a truncated file from
 a foreign one. This format names itself, so a wrong file is refused by name.
 
-Size is the practical limit. A populated world is 720–800 kB of text and browser
-storage is a few megabytes, so the store holds a handful. A save that does not fit says
-so in words, and a failed write leaves the world it was replacing exactly where it was:
-`setItem` either lands or throws.
+Size is the practical limit, and it is measured rather than estimated: in the built page
+a world is 720,534 chars at tick 200 (77 bugs) and 940,638 at tick 1510 (98). The stored
+envelope is a little larger than the file, because embedding the world as one JSON string
+re-escapes each of its quotes — 3,431 chars over the world text at tick 200, 117 of which
+is the envelope's own fields. Browser storage is a few megabytes, so the store holds a
+handful. A save that does not fit says so in words, and a failed write leaves the world
+it was replacing exactly where it was: `setItem` either lands or throws.
 
 ## What is verified, and how
 
@@ -125,7 +128,10 @@ bug energy and energy energy. Same inputs, same hash, or the port is not faithfu
 | …and its components | pop 77, time 200, maxGen 3, births 49, deaths 74, bugEnergy 40030, energyEnergy 76067 — all equal |
 | All six view modes | render 6 distinct canvases (`allDistinct`), no page errors during the sweep |
 | Bug-cell count vs population, t=200, 300 and 2,000 | 76 cells / pop 77, 88 / 91, 87 / 87 — the render and the counter agree |
-| A saved world continues | saved at tick 200, rebuilt from nothing and loaded, then stepped once: `0x259e7cc0`, the fingerprint of a run that never stopped |
+| A saved world continues | saved at tick 200, rebuilt from nothing and loaded, then stepped once: `0xbbf34742`, the fingerprint of a run that never stopped; the same equality holds at tick 1510 |
+| A corrupt entry cannot hide the rest | three entries written where the store looks — truncated JSON, valid JSON of another shape, and a matching header with no world — each listed and named (`unreadable: …`, `not a saved world`, `incomplete: carries no world`), none with a Load button; loading one states the reason and leaves the current world untouched |
+| Import runs through the file input, not a side door | a 150-tick world exported, rebuilt from nothing, then handed to the page's own `change` handler: back at tick 150 with 96 bugs and an equal fingerprint; a `.json` of another shape refused `not a tsbugs world: not a saved world (format undefined)`, world unchanged |
+| Export hands the browser a real file | the blob is 940,638 chars of `application/json` at tick 1510 and the anchor says `download="tsbugs-sweep-tick1510.json"` |
 | The text format round trips | re-encoding a decoded world gives the same bytes, then 200 ticks with no divergence — and `test/snapshot.test.ts` falsifies it twice (one step of stream offset, one changed genome byte) |
 
 The fingerprint is the useful one: it covers 57,600 indices *and* the counters,

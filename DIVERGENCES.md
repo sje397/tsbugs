@@ -625,7 +625,7 @@ enforces it — `snapshot()` refuses a `RandomSource` that cannot say where its 
 since a source that cannot answer cannot be saved correctly. This is what makes "continue"
 measurable rather than rhetorical: a world saved at tick 200 and restored into a dish built
 from nothing, stepped once, answers with the fingerprint of a run that never stopped
-(`0x259e7cc0` at tick 201 on the page), and 200 further ticks diverge not at all.
+(`0xbbf34742` at tick 201 on the page), and 200 further ticks diverge not at all.
 
 *It saves the view.* `view.mode` and `view.showByte` go into the file. Upstream's line for
 the same thing is commented out, so a loaded world silently lost the view; the port keeps
