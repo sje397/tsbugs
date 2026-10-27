@@ -28,9 +28,9 @@
  *     bug could be moved again by a later cell, or twice by its own.
  */
 
-import { Bug, DIR_STAY } from './bug.js';
+import { Bug, DIR_STAY, type BugState } from './bug.js';
 import { CoordPicker } from './coords.js';
-import type { RandomSource } from './rng.js';
+import { Rng, isResumable, type RandomSource } from './rng.js';
 import { BKG_COLOR, ENERGY_COLOR, MAX_BUG_COLOR, POISON_COLOR, type WorldParams } from './params.js';
 
 /** petri_dish.h:38 — ordinals match the original's menu order. */
@@ -153,6 +153,47 @@ export interface IntegrityReport {
   overfullNodes: number;
   underfullNodes: number;
 }
+
+/** What a saved world carries, and what `PetriDish.restore` accepts. */
+export interface WorldSnapshot {
+  /** Format version. A restore refuses a version it does not know. */
+  version: number;
+  params: WorldParams;
+  counters: {
+    time: number;
+    maxGen: number;
+    maxAge: number;
+    population: number;
+    bugEnergy: number;
+    energyEnergy: number;
+    births: number;
+    deaths: number;
+    injected: number;
+    /**
+     * Where the world's random stream was, not a seed. A seed plus a tick count
+     * does not identify a world: the stream is consumed a variable number of
+     * times per tick, so replaying from the seed is a different world by the time
+     * it reaches the same tick.
+     */
+    stream: number;
+  };
+  view: { mode: ViewMode; showByte: number };
+  /**
+   * The grid arrays, whole. They are indexable by cell, so a partial or sparse
+   * representation here would be a second definition of "which cells hold what"
+   * — and the sparse one would be the one that eventually disagreed. The text
+   * format sparsens them; the model does not (see src/ui/worldStore.ts).
+   */
+  energy: Int32Array;
+  bugTotal: Int32Array;
+  poison: Uint8Array;
+  /** Occupied cells in the world's own order, each with its bugs in list order. */
+  cells: Array<{ hash: number; bugs: BugState[] }>;
+}
+
+/** The version `snapshot()` writes and the only one `restore()` accepts. */
+export const WORLD_SNAPSHOT_VERSION = 1;
+
 
 export class PetriDish {
   readonly width: number;
@@ -756,6 +797,152 @@ export class PetriDish {
     };
   }
 
+  // -------------------------------------------------------------- persistence
+
+  /**
+   * This world, whole, as data — everything a restore needs and nothing derived.
+   *
+   * `bugCol` and `viewCol` are deliberately absent. Both are functions of the
+   * cells, the ground, the poison and the view mode, and `restore` recomputes them.
+   * Writing them into a file would put a second copy of the rendering rules beside
+   * the array they describe, and a second copy is a place for the two to disagree.
+   *
+   * Refuses (rather than inventing a stream position) if the world was built with a
+   * random source that cannot say where it is: see ResumableRandomSource.
+   */
+  snapshot(): WorldSnapshot {
+    if (!isResumable(this.rng)) {
+      throw new Error(
+        'this world was built with a random source that cannot report its stream position, ' +
+        'so it cannot be saved exactly — restoring it from a seed would replay to a different future',
+      );
+    }
+
+    const cells: Array<{ hash: number; bugs: BugState[] }> = [];
+    for (const hash of this.activeCells) {
+      const bugs = this.cells.get(hash);
+      if (bugs === undefined || bugs.length === 0) {
+        throw new Error(`active cell ${hash} holds no bugs, so this world cannot be saved as it stands`);
+      }
+      cells.push({ hash, bugs: bugs.map((bug) => bug.snapshotState()) });
+    }
+
+    return {
+      version: WORLD_SNAPSHOT_VERSION,
+      params: { ...this.params },
+      counters: {
+        time: this.time,
+        maxGen: this.maxGen,
+        maxAge: this.maxAge,
+        population: this.population,
+        bugEnergy: this.bugEnergy,
+        energyEnergy: this.energyEnergy,
+        births: this.births,
+        deaths: this.deaths,
+        injected: this.injected,
+        stream: this.rng.snapshotStream(),
+      },
+      view: { mode: this.viewMode, showByte: this.showByte },
+      energy: this.energy.slice(),
+      bugTotal: this.bugTotal.slice(),
+      poison: this.poison.slice(),
+      cells,
+    };
+  }
+
+  /**
+   * Rebuild a world from `snapshot()`.
+   *
+   * Every check here is a refusal, and they are all structural: a field that
+   * indexes an array, a count that contradicts the cells it counts, a version this
+   * build does not know. A half-applied world is worse than no world, because it
+   * runs — it just isn't the one that was saved, and nothing downstream can tell.
+   * The checks are not exhaustive about values (an energy of -3 would load), so a
+   * restore is not a defence against a deliberately edited file; it is a refusal to
+   * build something the simulation could not have produced by accident.
+   *
+   * The world's generator is built here rather than accepted from the caller: the
+   * stream position is part of the snapshot, so a source passed in would have its
+   * state overwritten on the next line. That also settles the type — the snapshot
+   * records a position in a mulberry32 stream, and Rng is the generator this
+   * project has.
+   */
+  static restore(snapshot: WorldSnapshot): PetriDish {
+    if (snapshot.version !== WORLD_SNAPSHOT_VERSION) {
+      throw new Error(
+        `world format version ${snapshot.version} is not version ${WORLD_SNAPSHOT_VERSION} — ` +
+        'this build cannot read it',
+      );
+    }
+
+    const { params, counters, view } = snapshot;
+    const cellCount = params.width * params.height;
+    if (cellCount <= 0) throw new Error(`world is ${params.width}x${params.height}`);
+    for (const [name, array] of [
+      ['energy', snapshot.energy], ['bugTotal', snapshot.bugTotal], ['poison', snapshot.poison],
+    ] as const) {
+      if (array.length !== cellCount) {
+        throw new Error(`${name} has ${array.length} cells but the world is ${params.width}x${params.height}`);
+      }
+    }
+    if (!Number.isInteger(view.mode) || view.mode < ViewMode.DEFAULT || view.mode > ViewMode.DNA_VALUE) {
+      throw new Error(`view mode ${view.mode} is not one of the six`);
+    }
+    if (!Number.isInteger(view.showByte) || view.showByte < 0) {
+      throw new Error(`gene byte ${view.showByte} is not a position`);
+    }
+    if (!Number.isInteger(counters.stream)) throw new Error(`stream position ${counters.stream} is not a number`);
+
+    // The stream is installed before anything can draw on it, and after the
+    // constructor's poison scatter — that scatter is part of building a world, and
+    // this world's ground is already saved, so its draws are discarded. Setting the
+    // state exactly is what makes them harmless: mulberry32 is a pure state machine.
+    const rng = new Rng(0);
+    const dish = new PetriDish(params, rng);
+
+    dish.energy.set(snapshot.energy);
+    dish.bugTotal.set(snapshot.bugTotal);
+    dish.poison.set(snapshot.poison);
+
+    let population = 0;
+    for (const cell of snapshot.cells) {
+      if (!Number.isInteger(cell.hash) || cell.hash < 0 || cell.hash >= cellCount) {
+        throw new Error(`cell ${cell.hash} is outside the world`);
+      }
+      if (cell.bugs.length === 0) throw new Error(`cell ${cell.hash} is listed with no bugs`);
+      if (dish.activeSet.has(cell.hash)) throw new Error(`cell ${cell.hash} is listed twice`);
+      const bugs = cell.bugs.map((state) => Bug.restore(state, params, rng));
+      dish.cells.set(cell.hash, bugs);
+      dish.activeSet.add(cell.hash);
+      dish.activeCells.push(cell.hash);
+      population += bugs.length;
+    }
+
+    if (population !== counters.population) {
+      throw new Error(
+        `the cells hold ${population} bugs but the world says ${counters.population} — ` +
+        'this snapshot disagrees with itself',
+      );
+    }
+
+    dish.time = counters.time;
+    dish.maxGen = counters.maxGen;
+    dish.maxAge = counters.maxAge;
+    dish.population = counters.population;
+    dish.bugEnergy = counters.bugEnergy;
+    dish.energyEnergy = counters.energyEnergy;
+    dish.births = counters.births;
+    dish.deaths = counters.deaths;
+    dish.injected = counters.injected;
+    dish.viewMode = view.mode;
+    dish.showByte = view.showByte;
+
+    rng.restoreStream(counters.stream);
+    dish.updateAllPixels();
+    return dish;
+  }
+
+  // ---------------------------------------------------------------- rendering
   // ---------------------------------------------------------------- rendering
 
   private updatePixel(hash: number): void {

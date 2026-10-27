@@ -39,13 +39,16 @@
   button:hover { border-color: #3d474f; }
   button.primary { background: #2b4a2b; border-color: #3d6b3d; }
   input[type=range] { width: 150px; }
-  input[type=number], select {
+  input[type=text], input[type=number], select {
     font: inherit; color: var(--text); background: #232a2f;
     border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px; width: 90px;
   }
   /* 90px is too narrow for the size select's own option text ("240 x 240" clips to
      "240 x 2" once the dropdown arrow and padding are taken out of it). */
   #size { width: 112px; }
+  /* Same problem with the save name: its placeholder says what an empty box does,
+     and at 90px the sentence is cut off, so the hint is unreadable. */
+  #saveName { width: 168px; }
   .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
   .modes label { color: var(--text); cursor: pointer; }
   .modes input { vertical-align: -1px; }
@@ -59,6 +62,17 @@
   #params input[type=number] { width: 78px; }
   #params input[type=range] { width: 78px; vertical-align: -4px; }
   #params select { width: 150px; }
+  #savedList { margin-top: 8px; display: grid; gap: 4px; }
+  #savedList:empty { display: none; }
+  /* A saved world is one row: the name and what it holds on the left, its two
+     actions on the right. The name truncates rather than wrapping, because a
+     wrapped row pushes the buttons out of line with everything else. */
+  .saved { display: flex; align-items: center; gap: 6px; }
+  .saved .what { flex: 1; min-width: 0; }
+  .saved .what b { font-weight: normal; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .saved .what span { color: var(--dim); font-size: 11px; }
+  .saved .what span.bad { color: #e0916a; }
+  .saved button { padding: 2px 8px; }
   .swatch { display: inline-block; width: 10px; height: 10px; border: 1px solid var(--line); vertical-align: -1px; }
   #dis { max-height: 240px; overflow: auto; background: #14181b; border: 1px solid var(--line); padding: 4px 6px; font-size: 12px; }
   #dis div { white-space: pre; }
@@ -156,6 +170,21 @@ the end of every genome read 0 and are drawn as empty columns; they are not coun
     <div class="row"><span>seed</span>
       <span><input id="seed" type="number" value="2024"></span></div>
     <div class="row"><span></span><span><button id="new">New world</button></span></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>saved worlds</legend>
+    <div class="row"><span>name</span>
+      <span><input id="saveName" type="text" maxlength="40" placeholder="blank = tick number"></span></div>
+    <div class="row"><span></span><span>
+      <button id="save">Save</button>
+      <button id="export">Export</button>
+      <button id="import">Import</button>
+    </span></div>
+    <!-- Hidden rather than styled: the browser's own file picker is the import UI. -->
+    <input id="importFile" type="file" accept=".json,application/json" hidden>
+    <div id="savedList"></div>
+    <div id="savedMsg" class="msg">saved worlds live in this browser's storage</div>
   </fieldset>
 
   <fieldset class="stats">

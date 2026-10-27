@@ -301,9 +301,8 @@ half-applying them` and `setParams refuses an inverted range atomically`.
 
 ## 11. Not yet ported
 
-World serialisation: upstream saves and loads worlds through `QDataStream`
-(save/save-as/autosave). The port has no persistence. Note that upstream itself does
-**not** serialise `viewMode`, so a loaded world always renders in Default.
+World serialisation was the last item on this list and is now ported, diverging
+deliberately; see §17.
 
 ## 12. Diverged: there is no terrain at all
 
@@ -583,3 +582,88 @@ rest, so the reach, the direct hit and the empty-cell case are independent of it
 version of the nearest-wins test had its decoy bug outside the reach, where it could never be
 the first candidate, and so passed the broken implementation: a test blind to its own
 hypothesis, caught by running it against the reverted code.
+
+## 17. Diverged: a saved world names itself, and saves where the stream was rather than a seed
+
+**Upstream.** `write_to_stream` (`main_window.cpp:336`) leads with a bare `(int)3`, then
+autosave, the `WorldParams`, the dish, idle detection and whether it was running;
+`load_from_file` (`:216`) reads that int and branches at `>= 2` and `>= 3`, and anything
+else gets one modal — *Sorry, could not load that file*. So it **is** versioned, which is
+worth saying because the obvious reading of an unlabelled binary file is that it is not.
+What it is not is self-describing: no format name, no magic beyond that integer. A
+truncated file leaves `ver` at 0 and gets the dialog, but a *foreign* file whose first four
+bytes happen to be `>= 2` is read as though it were params and a dish — so the failure mode
+is not one message, it is either that message or a world built out of someone else's
+bytes. The dish (`petri_dish.cpp:105-145`) is written densely: energy,
+terrain, poison, bug count and each bug, for every one of `width × height` cells. And
+`viewMode` is serialised by a **commented-out** line (`:108`, `:126`), so a loaded world
+always renders in Default.
+
+**The port.** `src/ui/worldStore.ts` writes JSON text; `PetriDish.snapshot()` and
+`restore()` are the model side. Three problems, three answers, plus what is not in the
+file.
+
+*It names itself.* `{"format": "tsbugs-world", "version": 1, …}`. A wrong file is refused
+by name rather than by an exception — `not a saved world: expected a JSON object` for the
+commonest wrong-file case (`JSON.parse` succeeds and gives an array, a string, a number), or
+`not a saved world (format …)` — an unknown version names **both** numbers, and a malformed
+field names the field and where it sits, by **cell hash rather than array index** so the
+message points at the same cell a person would look at on screen (`cell 17646 bug 0.g is not
+a string`).
+There are two version constants and they are deliberately separate: the text format's
+(`WORLD_FORMAT_VERSION`) and the model snapshot's (`WORLD_SNAPSHOT_VERSION`). The decoder
+hands `restore` the *model's* version, because it has just produced a current-shaped
+snapshot; passing on the file's number would make a valid new-format file refuse itself as
+an old model the moment the two moved apart.
+
+*It saves where the random stream was, not a seed.* Upstream's randomness is the global
+`qrand()` (§4), so a loaded world continued from wherever that generator happened to be —
+nothing about the file determined it. The port's stream lives in the dish, and the snapshot
+carries its **position** (`counters.stream`): a seed plus a tick count does not identify a
+world, because the stream is consumed a variable number of times per tick. The interface
+enforces it — `snapshot()` refuses a `RandomSource` that cannot say where its stream is,
+since a source that cannot answer cannot be saved correctly. This is what makes "continue"
+measurable rather than rhetorical: a world saved at tick 200 and restored into a dish built
+from nothing, stepped once, answers with the fingerprint of a run that never stopped
+(`0x259e7cc0` at tick 201 on the page), and 200 further ticks diverge not at all.
+
+*It saves the view.* `view.mode` and `view.showByte` go into the file. Upstream's line for
+the same thing is commented out, so a loaded world silently lost the view; the port keeps
+it, deliberately, because it is the one piece of the picture a person notices immediately.
+
+**What is in the file, and what is not**, measured on the default 240×240 world at tick 200
+(seed 2024), which is 805,750 chars and 98 bugs. The grid arrays are sparse and each is
+sparse in its own way: energy is `[hash, value]` pairs for the 1,557 of 57,600 cells that
+hold any (17,128 chars, against 57,600 numbers for the dense form), `bugTotal` is 98 pairs
+(1,168), and poison is a list of the 5 cell numbers that carry it (29). The `cells` array
+holds only the 98 cells that hold bugs — 99.83% of the world is absent from it — and it is
+786,808 chars, of which 774,272 is genome base64. The genome is base64 because it does not
+compress: 580,606 bytes is 774,272 chars this way and 2,072,926 as JSON numbers. The
+program in RAM is written as a **diff against the genome**, because RAM *is* the genome
+until a `STORE` overwrites it: only the addresses a bug actually rewrote are stored, as
+`[address, byte]` pairs. A bug whose program
+and genome differ in *length* is refused rather than saved (it could not be restored), and
+the fields that are derivable — the `viewCol`/`bugCol` palette arrays — are recomputed by a
+restore instead of being written twice. The processor's twenty input slots are **not**
+saved, while its outputs are: `Bug.update()` rewrites every input before each `run()`, so a
+saved input can never be read, whereas a program that never executes `OUT` leaves `out`
+holding the previous tick's answer, which `Bug.update()` then reads as this tick's.
+
+**Storage.** `localStorage` behind an injectable `WorldStorage` interface, so the format
+and the store are both testable with no DOM. A full store fails in words and **keeps the
+world it was replacing** — the write is attempted and the failure reported, so the earlier
+world is not lost to a failed save. A corrupt entry is **listed and named** rather than
+dropped, because a silent drop is how a saved world disappears without anyone being told.
+Names are checked against the world prefix, and only world keys are counted, so the page
+cannot be made to think a foreign key in `localStorage` is one of its worlds.
+
+**Tested in `test/snapshot.test.ts` (12 cases) and `test/worldStore.test.ts` (12), and
+falsified rather than asserted.** The round trip is byte-identical, and the two
+falsifications both start from a world that *should* diverge: offsetting the saved stream
+position by one step shows up within twenty ticks, and changing a single genome byte changes
+the saved state — so a test suite that passed either of those against a broken restore would
+be measuring nothing. `a self-modifying bug keeps what it stored over itself` is the reason
+the RAM diff exists, and `restore rebuilds the pixel cache rather than loading it` is the
+reason the palette is not in the file. The two version constants are covered separately:
+`restore refuses a format version it does not know` (model) and `the decoder refuses a text
+that is not a world, naming the field` (text).

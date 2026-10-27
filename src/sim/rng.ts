@@ -57,8 +57,34 @@ export interface RandomSource {
   float(): number;
 }
 
+/**
+ * A source whose position in its own stream can be read and put back.
+ *
+ * This is what makes a saved world continue rather than merely resemble one. A
+ * seed is not enough: two worlds built from the same seed diverge after one tick,
+ * so restoring a world at tick 5,000 from its seed alone would replay 5,000 ticks
+ * and still arrive somewhere else.
+ *
+ * It is a separate interface rather than part of RandomSource on purpose. A
+ * scripted source in a test has no meaningful position, and a `snapshot()` allowed
+ * to ask any source for one would have to invent an answer. A world whose stream
+ * cannot state where it is therefore cannot be snapshotted, and says so.
+ */
+export interface ResumableRandomSource extends RandomSource {
+  /** The live position in the stream — not a seed. Restoring it continues it. */
+  snapshotStream(): number;
+  /** Put the stream back to a value `snapshotStream()` gave. */
+  restoreStream(state: number): void;
+}
+
+/** Does this source know where it is? A guard, so a restore can refuse loudly. */
+export function isResumable(rng: RandomSource): rng is ResumableRandomSource {
+  const candidate = rng as Partial<ResumableRandomSource>;
+  return typeof candidate.snapshotStream === 'function' && typeof candidate.restoreStream === 'function';
+}
+
 /** A deterministic stand-in for qrand(). */
-export class Rng implements RandomSource {
+export class Rng implements ResumableRandomSource {
   private state: number;
 
   constructor(seed: number) {
@@ -68,6 +94,23 @@ export class Rng implements RandomSource {
   /** Re-seed in place, so a simulation can be restarted from the same seed. */
   reseed(seed: number): void {
     this.state = normaliseSeed(seed);
+  }
+
+  /**
+   * The generator's whole state, for a snapshot.
+   *
+   * Deliberately NOT normalised on the way back in: zero is a reachable state
+   * mid-stream (the state advances by a constant, so it passes through every
+   * 32-bit value), and folding it to the constant on restore would silently move
+   * the saved world's stream. Normalisation belongs to seeding, where zero means
+   * "no seed given", not to resuming a stream that has one.
+   */
+  snapshotStream(): number {
+    return this.state;
+  }
+
+  restoreStream(state: number): void {
+    this.state = state >>> 0;
   }
 
   /**

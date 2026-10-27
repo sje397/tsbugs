@@ -34,6 +34,10 @@ import { nearestBugAnywhere, pickNearestBug, pickRadiusCells } from '../dist/src
 import { DEFAULT_PARAMS, ENERGY_COLOR, POISON_COLOR, MAX_BUG_COLOR, BKG_COLOR } from '../dist/src/sim/params.js';
 import { Rng } from '../dist/src/sim/rng.js';
 import { fingerprint } from '../dist/src/sim/fingerprint.js';
+import {
+  WORLD_KEY_PREFIX, bytesToBase64, decodeWorld, deleteWorld, encodeWorld, isValidWorldName,
+  listWorlds, loadWorld, saveWorld, storageUsed,
+} from '../dist/src/ui/worldStore.js';
 
 // ---------------------------------------------------------------- palette
 // petriwidget.cpp:10-29, exactly: 0 black, 1..252 a red -> yellow -> green ramp
@@ -87,20 +91,37 @@ let lastMs = performance.now();
 function buildWorld() {
   const size = Number($('size').value);
   const seed = Number($('seed').value);
-  dish = new PetriDish({ ...DEFAULT_PARAMS, width: size, height: size }, new Rng(seed));
+  adoptDish(new PetriDish({ ...DEFAULT_PARAMS, width: size, height: size }, new Rng(seed)));
+  message(`world ${size}x${size}, seed ${seed}`);
+}
+
+/**
+ * Put a dish on screen: build, load, or import all end here.
+ *
+ * The world these came from is the point of the split. A loaded world may be a
+ * different size from the controls, so nothing here reads them; the size select is
+ * written from the world instead, because "New world" must mean what the panel says
+ * it means rather than what it said when the page opened.
+ */
+function adoptDish(next) {
+  dish = next;
+  const { width, height } = dish;
 
   off = document.createElement('canvas');
-  off.width = size;
-  off.height = size;
+  off.width = width;
+  off.height = height;
   offCtx = off.getContext('2d');
-  imageData = offCtx.createImageData(size, size);
+  imageData = offCtx.createImageData(width, height);
   image32 = new Uint32Array(imageData.data.buffer);
 
   // Keep world pixels square and the canvas a whole multiple of the world.
-  const scale = Math.max(1, Math.trunc(720 / size));
-  canvas.width = size * scale;
-  canvas.height = size * scale;
-  ctx.imageSmoothingEnabled = false;
+  const scale = Math.max(1, Math.trunc(720 / Math.max(width, height)));
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+  ctx.imageSmoothingEnabled = false;   // sizing the canvas resets the context's state
+
+  const sizeOption = Array.from($('size').options).find((option) => Number(option.value) === width);
+  if (sizeOption) $('size').value = sizeOption.value;
 
   worldSerial++;      // everything measured so far describes the previous world
   watched = null;
@@ -113,9 +134,9 @@ function buildWorld() {
 
   applyViewMode();
   renderParams();
-  message(`world ${size}x${size}, seed ${seed}`);
   draw();
   stats(performance.now(), true);
+  return dish;
 }
 
 /** viewCol -> canvas. One lookup per cell, then one scaled blit. */
@@ -673,6 +694,222 @@ function stats(now, force = false) {
   refreshVariance();
 }
 
+// ---------------------------------------------------------------- saved worlds
+/**
+ * Save, load, export, import.
+ *
+ * Four decisions worth stating, because each one is a way this could have been
+ * built and would have been worse:
+ *
+ *   - storage is `localStorage`, so a saved world belongs to THIS browser and
+ *     survives a reload but not a machine. The panel says so, and the export path
+ *     exists precisely because of it: a file is the only version that travels.
+ *   - saving under a name that already exists is an overwrite, so it asks first.
+ *     Loading never asks: it stops the run and says what it loaded, and the world
+ *     it replaced was whatever the page had open.
+ *   - a listing that cannot read one entry still lists the others (that is the
+ *     store's contract, and the test pins it). The row shows the problem and its
+ *     Load button is not there, rather than the entry vanishing.
+ *   - a failed write reports the store's own sentence, which says what to do. A
+ *     silent save and a silent load are indistinguishable until someone loses work,
+ *     which is the whole reason the store's errors are written in words.
+ */
+const storage = (() => {
+  try {
+    const probe = '__tsbugs_storage_probe__';
+    window.localStorage.setItem(probe, '1');
+    window.localStorage.removeItem(probe);
+    return window.localStorage;
+  } catch {
+    return null;   // a browser that refuses storage entirely (some private modes)
+  }
+})();
+
+function savedMessage(text, bad = false) {
+  message(text, bad, 'savedMsg');
+}
+
+function kilobytes(chars) {
+  return chars >= 1024 * 1024 ? `${(chars / 1024 / 1024).toFixed(1)} MB` : `${Math.round(chars / 1024)} KB`;
+}
+
+function slug(text) {
+  return text.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'world';
+}
+
+/** The name box, or the tick this world is at when the box is empty. */
+function worldName() {
+  const typed = $('saveName').value.trim();
+  return typed === '' ? `tick ${dish.time}` : typed;
+}
+
+function saveCurrent() {
+  if (storage === null) {
+    savedMessage('this browser will not let the page keep anything — use Export instead', true);
+    return null;
+  }
+  const name = worldName();
+  if (!isValidWorldName(name)) {
+    savedMessage(`"${name}" is not a name this store accepts (1..40 characters)`, true);
+    return null;
+  }
+  if (storage.getItem(WORLD_KEY_PREFIX + name) !== null && !window.confirm(`Overwrite "${name}"?`)) {
+    savedMessage('nothing saved');
+    return null;
+  }
+  try {
+    const saved = saveWorld(storage, name, dish.snapshot());
+    $('saveName').value = name;
+    savedMessage(`saved "${name}" — tick ${saved.tick}, ${saved.population} bugs, ${kilobytes(saved.storedBytes)}`);
+    refreshSaved();
+    return saved;
+  } catch (error) {
+    savedMessage(error.message, true);
+    return null;
+  }
+}
+
+function applySaved(name) {
+  if (storage === null) return false;
+  stopRunning();
+  try {
+    const snapshot = loadWorld(storage, name);
+    if (snapshot === null) {
+      savedMessage(`no saved world called "${name}" — deleted in another tab?`, true);
+      refreshSaved();
+      return false;
+    }
+    adoptDish(PetriDish.restore(snapshot));
+    message(`loaded "${name}"`);
+    savedMessage(`loaded "${name}" — tick ${dish.time}, ${dish.population} bugs`);
+    return true;
+  } catch (error) {
+    savedMessage(`"${name}" could not be loaded: ${error.message}`, true);
+    return false;
+  }
+}
+
+function removeSaved(name) {
+  if (storage === null) return false;
+  if (!window.confirm(`Delete "${name}"?`)) return false;
+  const gone = deleteWorld(storage, name);
+  savedMessage(gone ? `deleted "${name}"` : `"${name}" was already gone`, !gone);
+  refreshSaved();
+  return gone;
+}
+
+/** The world as a file: the same text the store keeps inside, so the two agree. */
+function exportCurrent() {
+  const text = encodeWorld(dish.snapshot());
+  const filename = `tsbugs-${slug(worldName())}-tick${dish.time}.json`;
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  // Not revoked immediately: some browsers have not finished reading the blob when
+  // click() returns, and a revoked URL downloads a zero-byte file.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  savedMessage(`exported ${filename} — ${kilobytes(text.length)}`);
+}
+
+function importText(text) {
+  try {
+    const snapshot = decodeWorld(text);
+    stopRunning();
+    adoptDish(PetriDish.restore(snapshot));
+    $('saveName').value = '';
+    message(`imported a ${dish.width}x${dish.height} world`);
+    savedMessage(`imported — tick ${dish.time}, ${dish.population} bugs`);
+    return true;
+  } catch (error) {
+    savedMessage(`not a tsbugs world: ${error.message}`, true);
+    return false;
+  }
+}
+
+/** One row per entry, newest first, with what each one holds. */
+function refreshSaved() {
+  const host = $('savedList');
+  host.textContent = '';
+
+  if (storage === null) {
+    savedMessage('this browser will not let the page keep anything — use Export instead', true);
+    return;
+  }
+
+  const entries = listWorlds(storage);
+  for (const entry of entries) {
+    const row = document.createElement('div');
+    row.className = 'saved';
+
+    const what = document.createElement('span');
+    what.className = 'what';
+    const name = document.createElement('b');
+    name.textContent = entry.name;
+    const detail = document.createElement('span');
+    if (entry.problem !== null) {
+      detail.className = 'bad';
+      // The store's problem strings already name their class ("unreadable: …",
+      // "not a saved world", "incomplete: …"); a prefix here would diagnose twice.
+      detail.textContent = entry.problem;
+    } else {
+      detail.textContent = `tick ${entry.tick} · ${entry.population} bugs · ${kilobytes(entry.storedBytes)}`;
+    }
+    what.append(name, detail);
+    row.append(what);
+
+    if (entry.problem === null) {
+      const load = document.createElement('button');
+      load.textContent = 'Load';
+      load.addEventListener('click', () => applySaved(entry.name));
+      row.append(load);
+    }
+
+    const remove = document.createElement('button');
+    remove.textContent = 'Delete';
+    remove.addEventListener('click', () => removeSaved(entry.name));
+    row.append(remove);
+
+    host.append(row);
+  }
+
+  if (entries.length === 0) {
+    savedMessage('nothing saved yet — Save keeps a world in this browser, Export gives you a file');
+  } else {
+    savedMessage(`${entries.length} saved, ${kilobytes(storageUsed(storage))} of this browser's storage`);
+  }
+}
+
+function stopRunning() {
+  running = false;
+  $('run').textContent = 'Run';
+}
+
+// Another tab's write is not visible to this one until something re-reads it, and
+// a list that silently disagrees with the store is how someone saves over a world
+// they were told did not exist.
+window.addEventListener('storage', (event) => {
+  if (event.key === null || event.key.startsWith(WORLD_KEY_PREFIX)) refreshSaved();
+});
+
+$('save').addEventListener('click', saveCurrent);
+$('export').addEventListener('click', exportCurrent);
+$('import').addEventListener('click', () => $('importFile').click());
+$('importFile').addEventListener('change', async () => {
+  const file = $('importFile').files?.[0];
+  if (!file) return;
+  try {
+    importText(await file.text());
+  } catch (error) {
+    savedMessage(`could not read the file: ${error.message}`, true);
+  } finally {
+    $('importFile').value = '';   // so choosing the same file twice fires again
+  }
+});
+
 // ---------------------------------------------------------------- loop
 function frame(now) {
   requestAnimationFrame(frame);
@@ -706,6 +943,21 @@ window.__tsbugs = {
     stats(performance.now(), true);
     return this.hash();
   },
+  /** The saved-world paths, exposed as the buttons use them rather than as a
+   *  parallel implementation: a probe that saves and loads is testing the page. */
+  save(name) {
+    if (name !== undefined) $('saveName').value = name;
+    const saved = saveCurrent();
+    return saved === null ? null : { name: saved.name, tick: saved.tick, bytes: saved.storedBytes };
+  },
+  load(name) { return applySaved(name) ? this.hash() : null; },
+  remove(name) { return removeSaved(name); },
+  saved: () => listWorlds(storage).map((entry) => ({ ...entry })),
+  /** Re-render the list. Exposed because a probe that writes a corrupt entry
+   *  needs the panel's own view of it, and the buttons are what a person sees. */
+  refreshSaved,
+  exportText() { return encodeWorld(dish.snapshot()); },
+  importText(text) { return importText(text) ? this.hash() : null; },
   /** Shared with Node, so a browser run and a headless run are comparable. */
   hash() {
     return fingerprint(dish);
@@ -733,4 +985,5 @@ window.__tsbugs = {
 };
 
 buildWorld();
+refreshSaved();
 requestAnimationFrame(frame);

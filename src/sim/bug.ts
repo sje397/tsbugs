@@ -12,8 +12,33 @@
 
 import { Dna } from './dna.js';
 import { Processor } from './processor.js';
+import type { ProcessorState } from './processor.js';
 import type { RandomSource } from './rng.js';
 import type { WorldParams } from './params.js';
+
+/**
+ * Everything a Bug is, as `snapshotState()` produces it.
+ *
+ * The genome and the processor state are separate because they are separate
+ * things in the model: the machine starts with a copy of the genome and diverges
+ * from it wherever the program stores over itself. A snapshot that carried only
+ * one of them would restore a bug that either forgets what it inherited or forgets
+ * what it has done.
+ */
+export interface BugState {
+  genome: Uint8Array;
+  mutationRate: number;
+  processor: ProcessorState;
+  dir: number;
+  color: number;
+  split: number;
+  age: number;
+  children: number;
+  generation: number;
+  energy: number;
+  /** Set by the move phase; cleared at the top of the next tick's run phase. */
+  marked: boolean;
+}
 
 /** Sense channels are 3x3 windows. */
 export const SENSE_SLOTS = 9;
@@ -101,6 +126,70 @@ export class Bug {
     this.color = this.processor.readOut(1);
     this.split = this.processor.readOut(2);
     this.age++;
+  }
+
+  /** This bug, whole, as data that can be put back with `restore`. */
+  snapshotState(): BugState {
+    return {
+      genome: this.dna.data.slice(),
+      mutationRate: this.dna.mutationRate,
+      processor: this.processor.snapshotState(),
+      dir: this.dir,
+      color: this.color,
+      split: this.split,
+      age: this.age,
+      children: this.children,
+      generation: this.generation,
+      energy: this.energy,
+      marked: this.marked,
+    };
+  }
+
+  /**
+   * Rebuild a bug from `snapshotState()`. Throws on a state that could not have
+   * come from one — a state whose genome and program disagree in length, or whose
+   * fields are not the shapes the simulation indexes.
+   *
+   * The processor's own restore does the same check for its half and names what
+   * failed; this one adds the two cross-checks that span both halves.
+   */
+  static restore(state: BugState, params: WorldParams, rng: RandomSource): Bug {
+    if (state.genome.length === 0) throw new Error('bug state has an empty genome');
+    if (state.processor.ram.length !== state.genome.length) {
+      throw new Error(
+        `genome is ${state.genome.length} bytes but the program is ${state.processor.ram.length} — ` +
+        'a bug whose genome and machine differ in length was not built by this simulation',
+      );
+    }
+    for (const [name, value] of [
+      ['dir', state.dir], ['color', state.color], ['split', state.split], ['age', state.age],
+      ['children', state.children], ['generation', state.generation], ['energy', state.energy],
+    ] as const) {
+      if (!Number.isFinite(value)) throw new Error(`bug state field ${name} is ${value}`);
+    }
+
+    // Copied, not adopted: a Dna holds the array it is given, so adopting the
+    // snapshot's would make the snapshot a live part of the world — and restoring
+    // the same snapshot twice would hand the second restore a genome the first
+    // had already changed.
+    const dna = new Dna(state.genome.slice(), state.mutationRate, rng);
+    const processor = Processor.restore(
+      state.processor, params.stepsPerUpdate, params.stackSize, rng,
+    );
+    const bug = new Bug(dna, processor);
+
+    // The constructor derives these three from the outputs; a snapshot is
+    // authoritative about them because `update` writes `color` raw while the
+    // constructor clamps it, so the two disagree for the same outputs.
+    bug.dir = state.dir;
+    bug.color = state.color;
+    bug.split = state.split;
+    bug.age = state.age;
+    bug.children = state.children;
+    bug.generation = state.generation;
+    bug.energy = state.energy;
+    bug.marked = state.marked;
+    return bug;
   }
 
   /** energy_node.h — plain ints with no clamping, upstream included. */

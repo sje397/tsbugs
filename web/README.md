@@ -18,7 +18,7 @@ dependencies. Nothing is bundled, rewritten or transpiled at serve time.
 
     npm run web:single     # tsc, then bundle everything into dist/tsbugs.html
 
-That second command builds the same page into **one file** — 52 kB, 9 modules
+That second command builds the same page into **one file** — 112 kB, 16 modules
 inlined, no imports left — which opens by double-click from anywhere, with no server
 and no repository. It exists for the two things a served page is bad at: a copy you
 can send someone, and a page with nothing that can go stale (no cache, no relative
@@ -31,10 +31,14 @@ surviving relative import — that check exists because the failure it catches i
 page that works on the machine that built it and nowhere else. And the built file is
 opened and held to the *same* fingerprint as Node (**2372629348** at seed 2024,
 200 steps — `0x8d6b7364`, the value `test/fingerprint.test.ts` pins), with
-the six view modes swept for distinct canvases: 6 distinct, 15,228 non-black canvas
-pixels in the Default view. That pixel count is 1,692 of 57,600 world cells, and it is
-worth stating its composition because on its own it reads as a measurement of the
-world: 80 bug cells, 1,607 energy cells, 5 poison cells, and background for the rest.
+the six view modes compared by the content of the canvas rather than by counting
+lit pixels: 6 distinct, and 15,156 non-black canvas pixels in the Default view. That
+pixel count is 1,684 of 57,600 world cells at 3 px each, and it is worth stating its
+composition because on its own it reads as a measurement of the world: 1,603 energy
+cells, 5 poison cells, and one cell per bug — 76 for a population of 77, because two
+bugs in one cell paint once. Counting pixels would have called five of the six modes
+identical: each draws one cell per bug, so the counts match and only the colours
+differ.
 Zero page errors, and exactly one network request, the file itself, which is the
 strongest form of "self-contained" available. The git revision is embedded in the
 page (`window.__tsbugsBuild`, and the footer), so a copy on someone's disk traces
@@ -44,13 +48,69 @@ back to a commit.
 
 | Control | What it does |
 |---|---|
-| **Play / Pause** | Starts and stops the tick loop. |
+| **Stop / Run** | Starts and stops the tick loop. |
 | **Step** | One tick, paused. |
-| **Ticks/frame** | How many simulation ticks to run per animation frame (1..200). |
+| **Ticks/frame** | How many simulation ticks to run per animation frame (1..64). |
+| **Fill the frame** | Spend the frame's time on ticks instead of running a fixed number of them. |
 | **View mode** | Six: Default, Bugs only, Bug energy, Age, DNA size, DNA value. |
-| **RNG seed** | The simulation is fully deterministic given this. Change it, reset, and you get a different world. |
-| **Reset** | Rebuilds the world from the current seed. There is nothing else to configure here — the ground is flat, nothing in the simulation changes it, and there is one sensory model (DIVERGENCES.md §13). |
-| **Fingerprint** | A 32-bit hash of the whole rendered grid plus the simulation counters. Its purpose is the next section. |
+| **DNA byte** | Which genome position the DNA-value mode reads; the variance chart sets it too. |
+| **World parameters** | The parameters are editable, and every change is followed by a read-back so the panel shows what the world actually holds. |
+| **Bug inspector** | Click a bug: its state, its registers, and its program disassembled around the instruction pointer. Clicking empty ground picks the nearest bug and says how far it was. |
+| **Gene variance** | Per gene position, the fraction of the population not holding the commonest byte there. Click a column to set the DNA byte. |
+| **Size / Seed / New world** | Rebuilds the world from the current seed and size. There is nothing else to configure here — the ground is flat, nothing in the simulation changes it, and there is one sensory model (DIVERGENCES.md §13). |
+| **Saved worlds** | Name, Save, Export, Import, and the stored list. The next section. |
+| **Stats** | Time, population, generation, and the energy accounting including the undistributed remainder. |
+
+The fingerprint is not a control: it is on `window.__tsbugs.hash()`, because its
+purpose is to be compared against Node rather than to be read off a screen.
+
+## Saving a world
+
+A world is saved as text: into this browser's storage under a name, or out to a
+`.json` file and back in. Both paths use `src/ui/worldStore.ts`, so the stored format
+and the file format are one format rather than two that drift.
+
+Three decisions in that format are worth stating, because each rules out a way of
+being wrong:
+
+**The stream position is saved, not just the seed.** A seed cannot resume anything —
+two worlds built from the same seed diverge after one tick, so restoring from a seed
+would replay and still arrive somewhere else. A snapshot carries the RNG's live
+position, and the claim that a loaded world *continues* is checked rather than
+asserted: a world saved at tick 200, rebuilt from nothing, loaded and stepped once has
+exactly the fingerprint of a run that never stopped (`0x259e7cc0` at tick 201 in the
+browser). `test/snapshot.test.ts` holds the same line for 200 ticks from Node, and
+carries two falsifications — one step of stream offset must diverge within twenty
+ticks, or the comparison cannot see anything and proves nothing. The interface is
+separate from `RandomSource` on purpose: a scripted source in a test has no meaningful
+position, so a world whose stream cannot state where it is refuses to be snapshotted
+instead of inventing an answer.
+
+**The processor's inputs are not saved; its outputs are.** Both look like the same
+kind of field and they are not. `Bug.update()` writes all twenty input slots before
+every `run()`, so a saved input can never be read — while a program that never
+executes OUT leaves `out` holding the previous tick's answer, which `Bug.update()`
+then reads as this tick's.
+
+**The genome is base64, and the program is a diff against it.** The genome is the bulk
+of a world and it does not compress: 580,606 bytes across 98 bugs is 774,272 chars as
+base64 against 2,072,926 as JSON numbers. RAM *is* the genome until a `STORE` overwrites
+it, so writing both would nearly double the file; only the addresses a bug actually
+rewrote are stored, as `[address, byte]` pairs. The grid arrays are sparse in their own
+ways — energy is `[hash, value]` pairs for the 1,557 of 57,600 cells that hold any —
+and pairs can be read by eye.
+
+Nothing derived is saved: the palette arrays are recomputed by a restore, because a
+saved copy of a rendering rule is a second copy of it. The format is versioned, and a
+version this build does not know is refused naming both versions. Upstream versioned its
+binary with a bare leading int, read at `>= 2` and `>= 3` (`main_window.cpp:216`, `:336`)
+— which told a reader nothing about the format and could not tell a truncated file from
+a foreign one. This format names itself, so a wrong file is refused by name.
+
+Size is the practical limit. A populated world is 720–800 kB of text and browser
+storage is a few megabytes, so the store holds a handful. A save that does not fit says
+so in words, and a failed write leaves the world it was replacing exactly where it was:
+`setItem` either lands or throws.
 
 ## What is verified, and how
 
@@ -64,7 +124,9 @@ bug energy and energy energy. Same inputs, same hash, or the port is not faithfu
 | Fingerprint, seed 2024, 200 steps | **2372629348** — identical in Node and Chromium |
 | …and its components | pop 77, time 200, maxGen 3, births 49, deaths 74, bugEnergy 40030, energyEnergy 76067 — all equal |
 | All six view modes | render 6 distinct canvases (`allDistinct`), no page errors during the sweep |
-| Bug-cell count vs population, t=200, 300 and 2,000 | 80 cells / pop 81, 98 / 99, 97 / 97 — the render and the counter agree |
+| Bug-cell count vs population, t=200, 300 and 2,000 | 76 cells / pop 77, 88 / 91, 87 / 87 — the render and the counter agree |
+| A saved world continues | saved at tick 200, rebuilt from nothing and loaded, then stepped once: `0x259e7cc0`, the fingerprint of a run that never stopped |
+| The text format round trips | re-encoding a decoded world gives the same bytes, then 200 ticks with no divergence — and `test/snapshot.test.ts` falsifies it twice (one step of stream offset, one changed genome byte) |
 
 The fingerprint is the useful one: it covers 57,600 indices *and* the counters,
 so a divergence anywhere in the tick — VM, RNG stream, list ordering, reproduction
@@ -74,8 +136,8 @@ falsifiable statement rather than a description of intent.
 The two kinds of agreement above are worth separating. The fingerprint is what makes
 the port falsifiable: same code, two engines, one number. The cell count is a check of
 the *renderer* against the simulation's own state, and it is a lower bound rather than
-an exact count — a cell holding two bugs paints once, which is why t=200 reads 80 cells
-for a population of 81.
+an exact count — a cell holding two bugs paints once, which is why t=200 reads 76 cells
+for a population of 77 and t=300 reads 88 for 91.
 
 ## Measured (M4 Max — spread is the point)
 

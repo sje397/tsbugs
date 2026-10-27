@@ -111,6 +111,26 @@ export const OPERAND_BYTES: readonly number[] = (() => {
   return table;
 })();
 
+/**
+ * A processor's whole state, as `snapshotState()` produces and `restore()` accepts.
+ *
+ * The arrays are copies and are expected to stay copies: restoring reads them and
+ * keeps its own, so a snapshot can be restored more than once and the second
+ * restore sees the same machine as the first.
+ */
+export interface ProcessorState {
+  /** Executable memory — the genome as it stood at construction, plus any STORE. */
+  ram: Uint8Array;
+  stack: Uint8Array;
+  inp: Uint8Array;
+  out: Uint8Array;
+  ip: number;
+  sp: number;
+  bp: number;
+  accumulator: number;
+}
+
+
 export class Processor {
   private readonly ram: Uint8Array;
   private readonly stack: Uint8Array;
@@ -157,6 +177,115 @@ export class Processor {
   /** Inspection hooks, used by the tests and by the UI's per-bug readout. */
   readRam(address: number): number {
     return this.ram[address];
+  }
+
+  /**
+   * The bytes this machine actually executes — a copy, because STORE and POPA
+   * write into them and a caller holding the live array would be holding the
+   * program while it changes under it.
+   *
+   * This is NOT the bug's genome. `ram` starts as a copy of the genome and then
+   * diverges wherever the program stores over itself, which is why a listing
+   * built from the genome can show bytes that are not what runs. Anything that
+   * describes execution reads this.
+   */
+  ramBytes(): Uint8Array {
+    return this.ram.slice();
+  }
+
+  /** The return stack's live contents, up to sp. A copy, for the same reason. */
+  stackBytes(): Uint8Array {
+    return this.stack.slice(0, this.sp);
+  }
+
+  get stackSize(): number {
+    return this.stack.length;
+  }
+
+  /**
+   * Write one byte of executable memory, and report the byte it replaced.
+   *
+   * Out of range is refused rather than wrapped: the genome is addressed modulo
+   * its own length in several places, and a caller that has already decided where
+   * a byte goes should be told when that address does not exist, not have it
+   * silently reinterpreted. Wrapping, where it is wanted, belongs in the caller
+   * that wants it.
+   *
+   * Note for the editor: writing here changes what this machine executes and
+   * nothing else. The genome is a separate array (note 3 in the header — ram is a
+   * copy, not an alias), so a change intended to outlive the bug or to be
+   * inherited by its children has to be written to both.
+   */
+  writeRam(address: number, value: number): number {
+    if (!Number.isInteger(address) || address < 0 || address >= this.ram.length) {
+      throw new RangeError(`address ${address} is outside the program (0..${this.ram.length - 1})`);
+    }
+    if (!Number.isInteger(value) || value < 0 || value > 255) {
+      throw new RangeError(`byte ${value} is not in 0..255`);
+    }
+    const previous = this.ram[address];
+    this.ram[address] = value;
+    return previous;
+  }
+
+  /**
+   * Everything needed to put this machine back where it is now: the executable
+   * bytes, the stack, the outputs, and the four registers.
+   *
+   * The inputs (`inp`) are recorded too. They are rewritten by the bug before
+   * every run, so they carry nothing across a tick — but "rebuilt and identical"
+   * is the property a snapshot has to have, and a restored processor that differs
+   * in a readable field until the next tick is a difference someone will
+   * eventually read.
+   */
+  snapshotState(): ProcessorState {
+    return {
+      ram: this.ram.slice(),
+      stack: this.stack.slice(),
+      inp: this.inp.slice(),
+      out: this.out.slice(),
+      ip: this.ip,
+      sp: this.sp,
+      bp: this.bp,
+      accumulator: this.acc,
+    };
+  }
+
+  /**
+   * Rebuild a processor from a state this class produced. Throws on a state that
+   * could not have come from one, because every field here indexes an array: a
+   * snapshot that is half-applied produces a machine that runs off the end of its
+   * own stack, and the fault would surface as a crash in the simulation rather
+   * than as a refusal at the door.
+   */
+  static restore(
+    state: ProcessorState,
+    stepsPerUpdate: number,
+    stackSize: number,
+    rng: RandomSource,
+  ): Processor {
+    if (state.ram.length === 0) throw new Error('processor state has an empty program');
+    if (state.stack.length !== stackSize) {
+      throw new Error(`stack is ${state.stack.length} bytes, but the world builds ${stackSize}`);
+    }
+    if (state.out.length !== OUTPUTS) throw new Error(`outputs are ${state.out.length} bytes, not ${OUTPUTS}`);
+    if (state.inp.length !== INPUTS) throw new Error(`inputs are ${state.inp.length} bytes, not ${INPUTS}`);
+    for (const [name, value] of [['ip', state.ip], ['sp', state.sp], ['bp', state.bp]] as const) {
+      if (!Number.isInteger(value) || value < 0) throw new Error(`${name} is not a position: ${value}`);
+    }
+    if (state.ip >= state.ram.length) throw new Error(`ip ${state.ip} is past the end of the program`);
+    if (state.sp > state.stack.length) throw new Error(`sp ${state.sp} is past the end of the stack`);
+    if (state.bp > state.sp) throw new Error(`bp ${state.bp} is above sp ${state.sp}`);
+
+    const processor = new Processor(state.ram, stepsPerUpdate, stackSize, rng);
+    processor.stack.set(state.stack);
+    processor.inp.set(state.inp);
+    processor.out.set(state.out);
+    processor.ip = state.ip;
+    processor.sp = state.sp;
+    processor.bp = state.bp;
+    processor.acc = state.accumulator;
+    return processor;
   }
 
   readIn(index: number): number {
