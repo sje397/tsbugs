@@ -9,7 +9,8 @@
  * the shipped value; it is just not the value to hand someone who has never seen
  * this model before.
  *
- * So the defaults are named rather than implied. `upstream` is `DEFAULT_PARAMS`
+ * So the defaults are named rather than implied, and the default is `twodots` —
+ * 5% mutation with the energy field split in two. `upstream` is `DEFAULT_PARAMS`
  * exactly — same values, same 240x240 world — and a test asserts that equality,
  * so it cannot drift as the model gains fields. The rest are a dial or three away
  * from it, described by what they *are* rather than by what they will produce: a
@@ -39,6 +40,12 @@ export interface WorldPreset {
 export const PRESET_FORBIDDEN: ReadonlySet<string> = new Set(['width', 'height']);
 
 export const PRESETS: readonly WorldPreset[] = [
+  {
+    id: 'twodots',
+    name: 'Two dots',
+    description: 'mutation 5% and energy in two blobs side by side, drifting in antiphase — two separate feeding grounds rather than one',
+    params: { mutation: 0.05, energyLayout: EnergyLayout.TWODOTS },
+  },
   {
     id: 'gentle',
     name: 'Gentle',
@@ -71,7 +78,26 @@ export const PRESETS: readonly WorldPreset[] = [
   },
 ];
 
-export const DEFAULT_PRESET_ID = 'gentle';
+/**
+ * What "New world" opens on.
+ *
+ * Two feeding grounds rather than one. What that buys, measured on 240x240 fields
+ * (mean bug colour over the left and right halves, at ticks 1000 and 2000, seed
+ * 2024): two dots 118.9 against 79.6, then 107.5 against 61.4, with the energy
+ * field split 45.6k/30.5k — two populations eating different food. The single dot
+ * at the same seed gives -15.5 then +2.1, the same split with the sign flipped
+ * between two ticks, which is a sampling artefact and not a niche.
+ *
+ * The honest limit of that claim: it is neither permanent nor general. By tick 6000
+ * the two grounds have mixed (7.1 apart, against 10.5 for the single dot), and seed
+ * 7 separates neither (-1.2, -9.7 for two dots). So the default is a world with two
+ * niches in it while it is young, not two species, and the choice rests on that plus
+ * the fact that the palette reads better when the two halves are not the same colour.
+ *
+ * The size is unchanged: `presetParams` still starts from `DEFAULT_PARAMS`, and a
+ * test asserts `upstream` is that object exactly.
+ */
+export const DEFAULT_PRESET_ID = 'twodots';
 
 export function presetById(id: string): WorldPreset | undefined {
   return PRESETS.find((preset) => preset.id === id);
