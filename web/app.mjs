@@ -44,6 +44,7 @@ import {
   encodeWorldFile, isValidWorldName, listWorlds, loadWorld, saveWorld, storageUsed, textSize,
 } from '../dist/src/ui/worldStore.js';
 import { defaultWorldName, uniqueWorldName } from '../dist/src/ui/worldName.js';
+import { describeAway, planCatchUp } from '../dist/src/ui/away.js';
 import { blitViewCol } from '../dist/src/ui/blit.js';
 import {
   cellAt, cellCentre, centreOn, fitZoom, layout, panBy, toDevice, zoomStep,
@@ -1645,7 +1646,10 @@ function stats(now, force = false) {
   const rate = t === lastTime ? 0 : ((t - lastTime) / (now - lastMs)) * 1000;
   lastTime = t;
   lastMs = now;
-  ups = Math.max(0, (4 * ups) / 5 + rate / 5);
+  // A catch-up in progress is not a run: it is minutes of ticks arriving in a
+  // quarter of a second, and feeding that into the average would make `ups` a
+  // description of the catch-up and set the next one's target from it.
+  if (catchUp === null) ups = Math.max(0, (4 * ups) / 5 + rate / 5);
 
   $('ups').textContent = `${ups.toFixed(2)}/s`;
   $('sTime').textContent = String(dish.time);
@@ -1889,8 +1893,102 @@ function refreshSaved() {
   }
 }
 
+// ---------------------------------------------------------------- away
+/**
+ * What a return from another tab does about the time the world did not run.
+ *
+ * A page the browser considers hidden is not given animation frames, and the loop
+ * below IS animation frames, so switching tabs stops the simulation dead. That is
+ * not a fault here and no control can turn it off: it is the rule every animated
+ * page obeys, and it is the right rule, because a world nobody is watching should
+ * not hold a core awake.
+ *
+ * What a return can do is buy back a slice of the time that was lost. It cannot be
+ * all of it, and the reason is arithmetic rather than caution: a tick is real CPU
+ * work, a two-dot world at speed 32 gets through a few thousand of them a second,
+ * and ten minutes of that is minutes of CPU. So the catch-up is spent against a
+ * budget instead of against the clock:
+ *
+ *   - CATCHUP_BUDGET_MS of work per return, spent in CATCHUP_SLICE_MS slices so
+ *     the page keeps painting and the world is visibly moving while it happens;
+ *   - the amount owed comes from `ups`, the rate the panel already shows, because
+ *     it ranges over two orders of magnitude between a two-dot world and a full
+ *     dish and any constant here would be wrong on one of them;
+ *   - when the budget runs out, the banner says how much was covered out of how
+ *     much was owed. A partial catch-up that reports itself is honest; one that
+ *     rounds up to "caught up" and says nothing is a lie about the world state.
+ *
+ * The budget is deliberately small, and it is a fixed amount of work rather than a
+ * share of the absence. Catching up at the live rate needs about four times the
+ * absence in wall time -- a run already saturates its frame -- so a budget that
+ * scaled with the absence would only ever grow into a longer freeze. Fixed means
+ * the common case is covered: a glance at another tab for a second or two is
+ * entirely caught up, in about a second of frames, and a long absence gets what
+ * the budget buys and a banner that says how little that was.
+ */
+const CATCHUP_BUDGET_MS = 500;
+const CATCHUP_SLICE_MS = 8;
+
+/** `performance.now()` when the page went hidden; 0 while it is visible. */
+let awaySince = 0;
+/** The catch-up being spent: ticks owed, ticks done, how long away, and a deadline. */
+let catchUp = null;
+
+/**
+ * Start catching up after an absence of `away` ms.
+ *
+ * Shared by the event and by the probe beneath, so a check of this path is a check
+ * of what the browser actually runs rather than of a parallel implementation.
+ */
+function returnedAfter(away) {
+  const plan = planCatchUp({ awayMs: away, ticksPerSecond: ups, running });
+  catchUp = plan.skipped === null
+    ? { owed: plan.wanted, done: 0, away, until: performance.now() + CATCHUP_BUDGET_MS }
+    : null;
+  return plan;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    awaySince = performance.now();
+    return;
+  }
+  const away = awaySince === 0 ? 0 : performance.now() - awaySince;
+  awaySince = 0;
+  // Nothing is said for a pause, a glance or an unmeasured rate: in all three
+  // there is no offer to report, and a banner explaining that nothing happened is
+  // noise in the one channel that is meant to carry refusals.
+  returnedAfter(away);
+});
+
+/** Spend one slice of the catch-up, and finish it -- with the tally -- when there
+ *  is nothing left to do or no budget left to do it in. */
+function spendCatchUp() {
+  const sliceEnd = performance.now() + CATCHUP_SLICE_MS;
+  while (catchUp.done < catchUp.owed && performance.now() < sliceEnd) {
+    dish.step();
+    catchUp.done++;
+  }
+  if (catchUp.done < catchUp.owed && performance.now() < catchUp.until) return;
+
+  const { owed, done, away } = catchUp;
+  catchUp = null;
+  // A burst is not a run rate. Sample from here, or the next `ups` absorbs a
+  // thousand ticks in one interval and the following return asks to catch up a
+  // thousand times more than it is owed.
+  lastTime = dish.time;
+  lastMs = performance.now();
+  const count = (n) => n.toLocaleString();
+  message(done < owed
+    ? `back after ${describeAway(away)} -- caught up ${count(done)} of ${count(owed)} ticks`
+    : `back after ${describeAway(away)} -- caught up ${count(done)} ticks`);
+}
+
 function stopRunning() {
   running = false;
+  // A world being replaced, or a run being paused, is an absence that no longer
+  // has a history to spend: the catch-up belongs to the dish it was measured on.
+  catchUp = null;
   $('run').textContent = 'Run';
 }
 
@@ -1920,7 +2018,9 @@ $('importFile').addEventListener('change', async () => {
 function frame(now) {
   requestAnimationFrame(frame);
   if (running) {
-    if ($('budget').checked) {
+    if (catchUp !== null) {
+      spendCatchUp();
+    } else if ($('budget').checked) {
       const until = performance.now() + BUDGET_MS;
       while (performance.now() < until) dish.step();
     } else {
@@ -1968,6 +2068,20 @@ window.__tsbugs = {
   importText(text) { return importText(text) ? this.hash() : null; },
   /** Shared with Node, so a browser run and a headless run are comparable. */
   hash: () => fingerprint(dish),
+  /** The return-from-hidden path, driven by a stated absence.
+   *
+   *  No automation harness will hide a tab for you -- Playwright's headed windows
+   *  still report `visible` with another window in front of them -- so the one
+   *  path that only runs in a hidden tab cannot be reached by hiding one. This
+   *  calls the same function the `visibilitychange` handler calls, so what a probe
+   *  exercises is the real path minus the event. */
+  away(awayMs) {
+    const plan = returnedAfter(awayMs);
+    return { ...plan, spending: catchUp !== null };
+  },
+  /** How much of a catch-up is left, for a probe waiting on one to finish. */
+  catchUp: () => (catchUp === null ? null : { ...catchUp }),
+
 
   /** The rail as a probe sees it: which section is showing, and what is in it. */
   tab(name) {
