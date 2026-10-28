@@ -146,7 +146,7 @@ test('every energy layout runs and keeps the budget', () => {
 // ------------------------------------------------------- the sensory layout
 //
 // DIVERGENCES.md §13. The VM has 20 inputs: colour 0-8, grid energy 9-17, and the
-// bug's own energy as a little-endian pair at 18-19. Upstream had 29, with a
+// bug's own energy split high byte first at 18-19 (in18*256 + in19). Upstream had 29, with a
 // nine-slot altitude group in the middle that this world has nothing to put in.
 // The numbers are pinned rather than left to be derived from constants, because a
 // slot index is the genome's interface: moving one silently changes what every

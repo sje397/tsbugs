@@ -115,6 +115,11 @@ export interface Senses {
   energy: number[][];
   /** The bug's own energy as the VM sees it: in18*256 + in19, and the two raw bytes. */
   ownEnergy: number;
+  /**
+   * `[high, low]` — slot 18 then slot 19. Stated here because the pair is
+   * high-byte-FIRST, the opposite of the VM's two-byte address operands, and a
+   * bare tuple gives a panel nothing to check that against.
+   */
   ownEnergyBytes: [number, number];
 }
 

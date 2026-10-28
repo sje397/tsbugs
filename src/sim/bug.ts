@@ -115,8 +115,13 @@ export class Bug {
 
   /** bug.cpp:116 — one VM tick and its consequences. */
   update(): void {
-    // The bug's own energy is exposed as a 16-bit little-endian pair. Upstream's
-    // slots 27/28, moved down with the altitude group's removal (§13).
+    // The bug's own energy is exposed as 16 bits split HIGH byte first: slot 18
+    // is energy / 256, slot 19 is energy % 256, so it is read as in18*256 + in19.
+    // Not the low-byte-first order the two-byte ADDRESS operands use — those are
+    // low first, this is not, and calling both "little-endian" is how a program
+    // written against this comment reads its own energy as (lo<<8)+hi. It is also
+    // not a 16-bit word the VM can load: only these two bytes carry it.
+    // Upstream's slots 27/28, moved down with the altitude group's removal (§13).
     this.processor.setIn(18, Math.trunc(this.energy / 256) & 0xff);
     this.processor.setIn(19, this.energy % 256);
 
