@@ -28,6 +28,30 @@ the tests and the Node benchmark run, so what is on screen is what is measured.
     npm run bench        throughput benchmark in Node
     npm run vm-share     sweep the VM share parameter and record the result
 
+## The code listing
+
+The Bug rail decodes the selected bug's genome as instructions. One sweep from
+address 0 is not the whole story: the machine jumps, and a landing point can fall
+inside bytes that sweep read as operands. Measured on a live bug, the ip at
+`0x0c2c` sits inside a `JMPZ #949` row starting at `0x0c2a`, while the bytes the
+machine executes there are `POPA #4165`. So the listing is anchored, and the
+footer names where:
+
+    ip   the code the machine is running, decoded from its own pointer
+    0    address order, decoded from 0
+    back one step along a chain of followed addresses
+
+Clicking an address operand (`#4165` and the like) decodes from there. Only an
+operand whose role names a place in the genome is followable: `input 5` and a
+bare `200` are not, because a value of 200 is not address 200. The role comes
+from the VM's own operand table rather than from byte count, which is why `IN`
+and `OUT` read `input 5` instead of carrying an address they never had.
+
+Rows do not restate the arithmetic. The byte column holds the stored bytes, and
+the footer states once that a stored byte above 26 runs as its modulo; printing
+`74 mod 27` on every row pushed the decode out of the eye's path.
+
+
 ## The single-file build
 
 `npm run web:single` produces `dist/tsbugs.html`: one file, no server, no imports
