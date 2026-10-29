@@ -83,33 +83,64 @@ export const MAX_I = 27;
 
 
 /**
- * How many operand bytes each opcode consumes, indexed by opcode ordinal.
+ * What an opcode's operand bytes MEAN, indexed by opcode ordinal.
  *
- * This exists so the disassembler can walk a genome without duplicating
- * step()'s knowledge of instruction lengths — a second copy of that knowledge
- * would be a second place for it to be wrong. It is not authoritative on its
- * own: `test/processor.test.ts` measures the advancement ip actually makes for
- * every one of the 27 opcodes and fails if this table disagrees, so an edit to
- * step() that changes consumption cannot pass unnoticed.
+ * The disassembler needs more than a length: it has to say what the operand is,
+ * and "which of the 20 inputs" and "which of the 4 outputs" are different facts
+ * from "the second operand of an ADD". Before this table existed the listing
+ * showed no operand at all for any one-byte instruction — IN, OUT and the whole
+ * arithmetic group printed a mnemonic and nothing else, so the byte column was
+ * the only place the argument appeared and it was unlabelled there.
+ *
+ * It exists so that knowledge is declared once and derived from, rather than
+ * copied: step() still switches on the opcode, and this table is not
+ * authoritative on its own. Two tests measure the VM against it:
+ * `test/processor.test.ts` advances ip for all 27 opcodes and fails if the ARITY
+ * disagrees, and `test/disasm.test.ts` executes one instruction per role and
+ * fails if the SEMANTICS disagree. Arity alone would not catch a role error:
+ * marking IN as `Value` keeps the length at one byte and would pass.
  *
  * The consumption is unconditional per opcode: the branching instructions read
  * their operands before testing anything, so there is no opcode whose length
  * depends on the accumulator or on the stack.
  */
-export const OPERAND_BYTES: readonly number[] = (() => {
-  const table = new Array<number>(MAX_I).fill(0);
+export enum OperandRole {
+  /** No operand bytes. */
+  None = 0,
+  /** Two bytes packed low-byte-first, reduced modulo the genome length: an address. */
+  Address = 1,
+  /** One byte reduced modulo INPUTS: which channel IN reads. */
+  Input = 2,
+  /** One byte reduced modulo OUTPUTS: which slot OUT writes. */
+  Output = 3,
+  /** One byte used as it stands: the second operand of an arithmetic opcode. */
+  Value = 4,
+}
+
+export const OPERAND_ROLE: readonly OperandRole[] = (() => {
+  const table = new Array<OperandRole>(MAX_I).fill(OperandRole.None);
   for (const op of [Instruction.PUSHA, Instruction.POPA, Instruction.SUBROUTINE,
                     Instruction.JMP, Instruction.JMPZ, Instruction.JMPNZ,
                     Instruction.LOAD, Instruction.STORE]) {
-    table[op] = 2;
+    table[op] = OperandRole.Address;
   }
-  for (const op of [Instruction.IN, Instruction.OUT, Instruction.AND, Instruction.OR,
-                    Instruction.NAND, Instruction.NOR, Instruction.XOR, Instruction.ADD,
-                    Instruction.SUB, Instruction.MUL, Instruction.DIV]) {
-    table[op] = 1;
+  table[Instruction.IN] = OperandRole.Input;
+  table[Instruction.OUT] = OperandRole.Output;
+  for (const op of [Instruction.AND, Instruction.OR, Instruction.NAND, Instruction.NOR,
+                    Instruction.XOR, Instruction.ADD, Instruction.SUB, Instruction.MUL,
+                    Instruction.DIV]) {
+    table[op] = OperandRole.Value;
   }
   return table;
 })();
+
+/**
+ * How many operand bytes each opcode consumes, derived from OPERAND_ROLE rather
+ * than declared beside it. Every role but `None` is one byte, except `Address`,
+ * which is two.
+ */
+export const OPERAND_BYTES: readonly number[] = OPERAND_ROLE.map((role) =>
+  (role === OperandRole.Address ? 2 : role === OperandRole.None ? 0 : 1));
 
 /**
  * A processor's whole state, as `snapshotState()` produces and `restore()` accepts.

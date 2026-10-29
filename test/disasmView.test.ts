@@ -15,9 +15,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { decodeLinear, type DecodedInstruction } from '../src/sim/disasm.js';
-import { MAX_I } from '../src/sim/processor.js';
+import { INPUTS, Instruction, MAX_I, OPERAND_BYTES, OUTPUTS } from '../src/sim/processor.js';
 import { Rng } from '../src/sim/rng.js';
-import { formatInstruction, hex4, instructionIndexAt, isMidInstruction, rowBytes, rowTail } from '../src/ui/disasmView.js';
+import {
+  formatInstruction, hex4, instructionIndexAt, isMidInstruction, operandText, rowBytes, rowTail,
+} from '../src/ui/disasmView.js';
 
 /** A genome of the requested length, from a stated seed. */
 function genomeOf(seed: number, length: number): Uint8Array {
@@ -134,39 +136,88 @@ test('a row whose operands wrap the genome does not steal the address it wraps t
 
 test('an instruction is shown with the bytes it stores, and says when they are not the opcode', () => {
   const plain: DecodedInstruction = {
-    address: 4, byte: 7, opcode: 7, name: 'PUSH', operandBytes: [3], byteAddresses: [4, 5],
-    wrapped: false, operandAddress: null, operandAddressRaw: null, length: 2,
+    address: 4, byte: 7, opcode: 7, name: 'IN', operandBytes: [9], byteAddresses: [4, 5],
+    wrapped: false, operand: { role: 'input', value: 9, stored: 9 }, length: 2,
   };
-  assert.equal(formatInstruction(plain, MAX_I), '07 03        PUSH       ');
+  assert.equal(formatInstruction(plain, MAX_I), '07 09        IN           input 9');
 
-  const modulo: DecodedInstruction = { ...plain, byte: 34, opcode: 34 % MAX_I, name: 'PUSH' };
+  const modulo: DecodedInstruction = { ...plain, byte: 34, opcode: 34 % MAX_I };
   const annotated = formatInstruction(modulo, MAX_I);
-  assert.ok(annotated.startsWith('22 03'), 'the byte as stored leads the row, not the opcode the VM runs');
+  assert.ok(annotated.startsWith('22 09'), 'the byte as stored leads the row, not the opcode the VM runs');
   assert.ok(
-    annotated.includes(`34%${MAX_I}=${34 % MAX_I}`),
+    annotated.includes(`34 mod ${MAX_I} = ${34 % MAX_I}`),
     'a genome byte above the opcode count is shown with the modulo the VM applied',
   );
+  // `%` next to this VM's opcode count (27) renders `223%27=7`, which reads as the
+  // URL-escape for an apostrophe. It is arithmetic, not an encoding, and the row
+  // has to be unable to be mistaken for one.
+  assert.doesNotMatch(annotated, /%/, 'no row may contain a percent sign — `%27` reads as an escape');
   // The annotation goes after the operand, so the mnemonic column is unmoved —
   // a listing whose columns shift per row is one nobody can scan.
   assert.equal(
-    annotated.indexOf('PUSH'),
-    formatInstruction(plain, MAX_I).indexOf('PUSH'),
+    annotated.indexOf('IN'),
+    formatInstruction(plain, MAX_I).indexOf('IN'),
     'a row that needs the modulo note is still aligned with the rows that do not',
   );
 });
 
 test('an operand address is shown, and a wrapped or moduloed one admits it', () => {
   const jump: DecodedInstruction = {
-    address: 9, byte: 8, opcode: 8, name: 'JMP', operandBytes: [1, 2], byteAddresses: [9, 10, 11],
-    wrapped: false, operandAddress: 258, operandAddressRaw: null, length: 3,
+    address: 9, byte: 8, opcode: 8, name: 'OUT', operandBytes: [1, 2], byteAddresses: [9, 10, 11],
+    wrapped: false, operand: { role: 'address', value: 258, stored: null }, length: 3,
   };
   assert.match(formatInstruction(jump, MAX_I), /#258/);
   assert.doesNotMatch(formatInstruction(jump, MAX_I), /wrapped/);
 
-  const wrappedJump: DecodedInstruction = { ...jump, wrapped: true, operandAddress: 2, operandAddressRaw: 258 };
+  const wrappedJump: DecodedInstruction = {
+    ...jump, wrapped: true, operand: { role: 'address', value: 2, stored: 258 },
+  };
   const line = formatInstruction(wrappedJump, MAX_I);
   assert.match(line, /#2 \(258 wrapped\)/, 'the address before the modulo is the only way to see the wrap happened');
   assert.match(line, /\[operands wrap\]/);
+});
+
+test('a one-byte operand says what it is, on every opcode that takes one', () => {
+  // The defect this covers: IN, OUT and the whole arithmetic group printed a
+  // mnemonic and nothing else, so the only place the argument appeared was the
+  // unlabelled byte column. Every one-byte opcode must name its operand.
+  for (let op = 0; op < MAX_I; op++) {
+    if (OPERAND_BYTES[op] !== 1) continue;
+    const [row] = decodeLinear(Uint8Array.from([op, 200]));
+    assert.equal(row.name, Instruction[op]);
+    const text = operandText(row.operand);
+    assert.notEqual(text.trim(), '', `${Instruction[op]} takes an operand and the row shows none`);
+  }
+
+  // And the three meanings are distinguishable, because a reader needs to know
+  // whether 200 is a channel number, a slot number, or the value itself.
+  assert.equal(operandText(decodeLinear(Uint8Array.from([Instruction.IN, 200]))[0].operand),
+    `  input ${200 % INPUTS} (200 mod ${INPUTS})`);
+  assert.equal(operandText(decodeLinear(Uint8Array.from([Instruction.OUT, 200]))[0].operand),
+    `  output ${200 % OUTPUTS} (200 mod ${OUTPUTS})`);
+  assert.equal(operandText(decodeLinear(Uint8Array.from([Instruction.ADD, 200]))[0].operand),
+    '  200', 'an arithmetic operand is the byte as it stands — nothing reduces it');
+
+  // An operand that needed no reduction says nothing extra, so the annotation
+  // stays a signal rather than becoming the default.
+  assert.equal(operandText(decodeLinear(Uint8Array.from([Instruction.IN, 3]))[0].operand), '  input 3');
+});
+
+test('no row of a mutable genome reads as a percent-escape', () => {
+  // Mutation writes bytes across the whole 0-255 range, so most rows of a real
+  // genome carry the opcode modulo — 3,671 of 4,102 in the specimen that raised
+  // this. A `%` notation therefore covered the listing rather than annotating it.
+  const listing = decodeLinear(genomeOf(11, 512));
+  const annotated = listing.filter((ins) => ins.byte !== ins.opcode);
+  assert.ok(listing.length > 200, 'the fixture is meant to be a whole genome, not a handful of rows');
+  assert.ok(
+    annotated.length > listing.length * 0.7,
+    'most rows of a random genome carry the opcode modulo, so a `%` there washes over the listing '
+    + 'rather than annotating it',
+  );
+  for (const ins of listing) {
+    assert.doesNotMatch(formatInstruction(ins, MAX_I), /%/, `row at ${ins.address} reads as an escape`);
+  }
 });
 
 test('addresses are shown in hexadecimal without losing leading zeros', () => {

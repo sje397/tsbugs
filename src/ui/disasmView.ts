@@ -13,7 +13,8 @@
  * the stream is contiguous.
  */
 
-import type { DecodedInstruction } from '../sim/disasm.js';
+import type { DecodedInstruction, Operand } from '../sim/disasm.js';
+import { INPUTS, OUTPUTS } from '../sim/processor.js';
 
 /**
  * The index of the row whose byte range contains `ip`, or -1 if there is none.
@@ -54,22 +55,60 @@ export function rowBytes(ins: DecodedInstruction): Array<{ address: number; hex:
 }
 
 /**
+ * The operand, said in the terms the opcode means it in.
+ *
+ * An address is `#258` — a slot in the genome the program reads, writes or jumps
+ * to. An input or an output is a channel number, and is named as one. An
+ * arithmetic operand is the byte itself, as a value.
+ *
+ * Where the VM reduced the stored number to get here, the row says so in the
+ * same words the opcode modulo uses, because the number that produced it is
+ * otherwise absent from the line: `#0 (16 wrapped)` for an address past the end
+ * of the genome, `input 5 (225 mod 20)` for a channel byte above the 20 inputs.
+ * The reductions are the point — a genome full of mutation-written bytes spends
+ * most of its time being reduced — so a row that quietly showed the reduced
+ * value would be the hardest kind of line to read: correct and inexplicable.
+ */
+export function operandText(operand: Operand | null): string {
+  if (operand === null) return '';
+
+  switch (operand.role) {
+    case 'address':
+      return `  #${operand.value}`
+        + (operand.stored === null ? '' : ` (${operand.stored} wrapped)`);
+
+    case 'input':
+      return `  input ${operand.value}`
+        + (operand.stored === operand.value ? '' : ` (${operand.stored} mod ${INPUTS})`);
+
+    case 'output':
+      return `  output ${operand.value}`
+        + (operand.stored === operand.value ? '' : ` (${operand.stored} mod ${OUTPUTS})`);
+
+    case 'value':
+      return `  ${operand.value}`;
+  }
+}
+
+/**
  * The rest of the line: the mnemonic, then — where they differ from what the
- * reader would guess — the operand address and the modulo.
+ * reader would guess — the operand and the modulo.
  *
  * The stored byte is shown as well as the opcode because a genome written by
  * mutation holds byte values the machine never sees directly: `byte % MAX_I` is
  * what executes, and a bug whose genome is full of 245s runs POPs.
+ *
+ * The modulo is spelled `mod` rather than `%` deliberately. MAX_I is 27, so the
+ * `%` form rendered as `223%27=7` — which reads as the URL-escape `%27` (an
+ * apostrophe) followed by `=7`, and it appeared on 3,671 of 4,102 rows of a
+ * single mutated genome, so it read as corruption rather than as arithmetic.
+ * A notation that collides with an encoding has to give way: `mod` cannot be
+ * mistaken for a percent-escape and needs no key.
  */
 export function rowTail(ins: DecodedInstruction, maxI: number): string {
-  let operand = '';
-  if (ins.operandAddress !== null) {
-    operand = `  #${ins.operandAddress}`;
-    if (ins.operandAddressRaw !== null) operand += ` (${ins.operandAddressRaw} wrapped)`;
-  }
-
+  const operand = operandText(ins.operand);
   const wrapped = ins.wrapped ? '  [operands wrap]' : '';
-  const modulo = ins.byte !== ins.opcode ? `  ${ins.byte}%${maxI}=${ins.opcode}` : '';
+  const modulo = ins.byte !== ins.opcode ? `  ${ins.byte} mod ${maxI} = ${ins.opcode}` : '';
 
   return `${ins.name.padEnd(11)}${operand}${wrapped}${modulo}`;
 }
