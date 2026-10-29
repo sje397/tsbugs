@@ -2764,23 +2764,34 @@ function chartCursor(event) {
  * Which instrument the strip is showing: a series over time, or the population's
  * generation distribution right now.
  *
- * Kept apart from `series` because they are not alternatives to each other -- the
- * series choice survives a trip through the distribution and comes back with the
- * same line selected. The remembered key is separate for the same reason: forgetting
- * which instrument was on screen and forgetting which line was selected are
- * different losses.
+ * The two are still different things underneath -- a distribution has no series -- but
+ * they are one row of five buttons on screen. A mode switch above a row of readings
+ * reads as a hierarchy, and the hierarchy is the thing that was wrong: the histogram is
+ * not what you see once you have left the lines, it is the fifth reading of the same
+ * world. It also cost the reader a rule to learn, since the readings row vanished for as
+ * long as the fifth was up.
+ *
+ * Selection is therefore a single fact painted onto five buttons, and `paintChartTabs`
+ * is the only thing that paints it. Two loops each owning their own half is how a row
+ * ends up showing two selected readings at once, or none.
  */
 const KIND_KEY = 'tsbugs.chart';
 const CHART_KINDS = ['history', 'spread'];
 let chartKind = 'history';
 
+function paintChartTabs() {
+  for (const button of document.querySelectorAll('#chartTabs button')) {
+    const selected = button.dataset.kind === 'spread'
+      ? chartKind === 'spread'
+      : chartKind === 'history' && button.dataset.series === series;
+    button.setAttribute('aria-selected', selected ? 'true' : 'false');
+  }
+}
+
 function showChartKind(name) {
   const next = CHART_KINDS.includes(name) ? name : 'history';
   chartKind = next;
-  document.body.dataset.chart = next;
-  for (const button of document.querySelectorAll('#chartKind button')) {
-    button.setAttribute('aria-pressed', button.dataset.kind === next ? 'true' : 'false');
-  }
+  paintChartTabs();
   drawChart();
   try {
     storage?.setItem(KIND_KEY, next);
@@ -2823,18 +2834,17 @@ const chart = $('chart');
 chart.addEventListener('pointermove', chartCursor);
 chart.addEventListener('pointerleave', () => chart.querySelector('.cursor').setAttribute('hidden', ''));
 
+/**
+ * One row, one handler. A series button picks the line and stays on the history
+ * instrument; the histogram button keeps whatever line was selected. Both go through
+ * showChartKind, so the painted state, the drawn state and the remembered state are
+ * written in one place rather than three that can disagree.
+ */
 for (const button of document.querySelectorAll('#chartTabs button')) {
   button.addEventListener('click', () => {
-    series = button.dataset.series;
-    for (const other of document.querySelectorAll('#chartTabs button')) {
-      other.setAttribute('aria-selected', other === button ? 'true' : 'false');
-    }
-    drawChart();
+    if (button.dataset.kind !== 'spread') series = button.dataset.series;
+    showChartKind(button.dataset.kind);
   });
-}
-
-for (const button of document.querySelectorAll('#chartKind button')) {
-  button.addEventListener('click', () => showChartKind(button.dataset.kind));
 }
 
 // ---------------------------------------------------------------- start

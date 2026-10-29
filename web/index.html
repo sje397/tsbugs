@@ -205,9 +205,6 @@
   #chart .cursor text { fill: var(--text); font: 10px var(--mono); }
   #chart .empty { fill: var(--dim); font: 11px var(--sans); }
   #chart .bars rect { fill: var(--accent); fill-opacity: .5; }
-  /* The series tabs pick a line to draw; a distribution has no series, so showing
-     them would offer a control that does nothing. */
-  body[data-chart="spread"] #chartTabs { display: none; }
 
   /* ------------------------------------------------------------------ rail */
   .rail {
@@ -487,15 +484,16 @@
 
     <div class="chartArea">
       <div class="chartHead">
-        <div class="seg" id="chartKind" role="group" aria-label="chart kind">
-          <button type="button" data-kind="history" aria-pressed="true">History</button>
-          <button type="button" data-kind="spread" aria-pressed="false">Spread</button>
-        </div>
-        <div class="seg" id="chartTabs" role="tablist" aria-label="chart series">
-          <button type="button" role="tab" data-series="population" aria-selected="true">Population</button>
-          <button type="button" role="tab" data-series="generation" aria-selected="false">Generation</button>
-          <button type="button" role="tab" data-series="evenness" aria-selected="false">Diversity</button>
-          <button type="button" role="tab" data-series="bugEnergy" aria-selected="false">Energy</button>
+        <!-- One row, five readings. Four are lines through a series over time and the
+             fifth is the population's shape at this instant; they are peers in the strip
+             because they are peers as questions, and splitting them into two rows made
+             the histogram look like a mode of the chart rather than one of its readings. -->
+        <div class="seg" id="chartTabs" role="tablist" aria-label="chart">
+          <button type="button" role="tab" data-kind="history" data-series="population" aria-selected="true">Population</button>
+          <button type="button" role="tab" data-kind="history" data-series="generation" aria-selected="false">Generation</button>
+          <button type="button" role="tab" data-kind="history" data-series="evenness" aria-selected="false">Diversity</button>
+          <button type="button" role="tab" data-kind="history" data-series="bugEnergy" aria-selected="false">Energy</button>
+          <button type="button" role="tab" data-kind="spread" aria-selected="false">Spread</button>
         </div>
         <div class="now"><span id="chartNowLabel">population</span> <b id="chartNowValue">0</b></div>
       </div>
