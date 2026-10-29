@@ -55,6 +55,9 @@ import {
 } from '../dist/src/ui/machine.js';
 import { CLASS_LABEL, CLASS_ORDER, genomeStrip, opClass } from '../dist/src/ui/genomeMap.js';
 import { genePool } from '../dist/src/ui/genePool.js';
+import {
+  binGenerations, binRange, chooseStep, histogramSummary, peakBin,
+} from '../dist/src/ui/generationHistogram.js';
 
 // ---------------------------------------------------------------- palette
 // The colour table and its CSS rendering live in src/ui/palette.ts, which is
@@ -2482,30 +2485,48 @@ function chartBox() {
   return { width, height, left: 2, right: width - 44, top: 9, bottom: height - 14 };
 }
 
+/**
+ * Two instruments share this strip: a line through one series over time, and the
+ * population's generation distribution at this instant. They answer different
+ * questions and share only the box, so the dispatch is here and the drawing is not.
+ *
+ * Clearing is in the dispatcher rather than in each drawer, because a leftover path
+ * from the other instrument would draw confidently over the wrong chart -- a line
+ * through the bars is not obviously wrong at a glance, which is the whole problem.
+ */
 function drawChart() {
   const { width, height } = chartBox();
   if (chart.getAttribute('viewBox') !== `0 0 ${width} ${height}`) {
     chart.setAttribute('viewBox', `0 0 ${width} ${height}`);
   }
-
   const box = chartBox();
+
+  chart.querySelector('.grid').textContent = '';
+  chart.querySelector('.axis').textContent = '';
+  chart.querySelector('.area').setAttribute('d', '');
+  chart.querySelector('.line').setAttribute('d', '');
+  chart.querySelector('.bars').textContent = '';
+  chart.querySelector('.cursor').setAttribute('hidden', '');
+
+  if (chartKind === 'spread') drawSpread(box, width, height);
+  else drawHistory(box, width, height);
+}
+
+const HISTORY_ARIA = 'history of the selected series';
+
+function drawHistory(box, width, height) {
   const plotW = Math.max(1, box.right - box.left);
   const plotH = Math.max(1, box.bottom - box.top);
 
   const definition = SERIES[series] ?? SERIES.population;
   $('chartNowLabel').textContent = definition.label;
   $('chartNowValue').textContent = definition.format(definition.read());
+  chart.setAttribute('aria-label', HISTORY_ARIA);
 
   const grid = chart.querySelector('.grid');
   const axis = chart.querySelector('.axis');
   const area = chart.querySelector('.area');
   const line = chart.querySelector('.line');
-  const cursor = chart.querySelector('.cursor');
-  grid.textContent = '';
-  axis.textContent = '';
-  cursor.setAttribute('hidden', '');
-  area.setAttribute('d', '');
-  line.setAttribute('d', '');
 
   const values = history.map((sample) => sample[series]).filter((v) => typeof v === 'number' && Number.isFinite(v));
 
@@ -2583,7 +2604,115 @@ function drawChart() {
   spanLabel.textContent = `${span} ticks`;
   axis.append(spanLabel);
 
-  chartState.geometry = { box, low, high, xAt, points };
+  chartState.geometry = { kind: 'history', box, low, high, xAt, points };
+}
+
+/**
+ * The distribution behind `maxGen`: how far through its own lineage each living bug
+ * is. Where the history chart reports the deepest lineage, this reports the shape of
+ * the population that produced it -- and the two are not the same claim. Two worlds
+ * with an identical `maxGen` can hold one deep bug or forty, and only this chart can
+ * tell them apart.
+ *
+ * The whole arithmetic lives in src/ui/generationHistogram.ts, because the three
+ * ways a histogram can lie quietly -- a window that slides when nothing moved, a
+ * step that flickers, a bar count that overflows the strip -- are all decidable
+ * without a DOM and are decided there, with tests. This function only draws.
+ */
+let spreadState = { step: 1, world: -1 };
+
+function drawSpread(box, width, height) {
+  const plotW = Math.max(1, box.right - box.left);
+  const plotH = Math.max(1, box.bottom - box.top);
+
+  const generations = [];
+  dish.forEachBug((bug) => generations.push(bug.generation));
+
+  let low = Infinity;
+  let high = -Infinity;
+  for (const generation of generations) {
+    if (generation < low) low = generation;
+    if (generation > high) high = generation;
+  }
+  const span = generations.length === 0 ? 0 : high - low;
+
+  // How many bars fit is a property of the strip, not a constant: the chart is the
+  // same instrument in Dish, Split and Charts and only one of those is wide. Six
+  // pixels a bar is where a one-bug bar is still a visible mark.
+  const maxBars = Math.max(8, Math.floor(plotW / 6));
+  // A new world starts its generations over, so the width it needed is no longer
+  // evidence about the one on screen.
+  if (spreadState.world !== worldSerial) spreadState = { step: 1, world: worldSerial };
+  spreadState.step = chooseStep(span, maxBars, spreadState.step);
+
+  const bins = binGenerations(generations, spreadState.step);
+  // A bar chart is not readable as text, so the sentence is the accessible content
+  // rather than a description of it.
+  chart.setAttribute('aria-label', histogramSummary({ tick: dish.time, bins }));
+
+  const count = bins.counts.length;
+  $('chartNowLabel').textContent = 'bugs';
+  $('chartNowValue').textContent = `${bins.total} in ${count} bin${count === 1 ? '' : 's'}`;
+
+  const axis = chart.querySelector('.axis');
+  if (count === 0) {
+    const note = svgEl('text', 'empty');
+    note.setAttribute('x', String(box.left + 2));
+    note.setAttribute('y', String(box.top + 12));
+    note.textContent = 'no bugs to count';
+    axis.append(note);
+    chartState.geometry = null;
+    return;
+  }
+
+  const peak = peakBin(bins);
+  const top = Math.max(1, peak === null ? 1 : peak.count);
+
+  // Three levels, as on the history chart: a reference without a lattice.
+  const grid = chart.querySelector('.grid');
+  for (let i = 0; i <= 2; i++) {
+    const y = box.bottom - (plotH * i) / 2;
+    const row = svgEl('line');
+    row.setAttribute('x1', String(box.left));
+    row.setAttribute('x2', String(box.right));
+    row.setAttribute('y1', y.toFixed(2));
+    row.setAttribute('y2', y.toFixed(2));
+    grid.append(row);
+  }
+
+  const slot = plotW / count;
+  const gap = slot >= 3 ? 1 : 0;
+  const barWidth = Math.max(1, slot - gap);
+  const bars = chart.querySelector('.bars');
+  bins.counts.forEach((value, i) => {
+    // An empty bin gets no bar at all. A zero-height rect and a one-pixel minimum
+    // would make an empty generation and a single bug look the same, and the gap is
+    // the thing that shows two populations are separate.
+    if (value === 0) return;
+    const barHeight = Math.max(1, (value / top) * plotH);
+    const rect = svgEl('rect');
+    rect.setAttribute('x', (box.left + i * slot + gap / 2).toFixed(2));
+    rect.setAttribute('y', (box.bottom - barHeight).toFixed(2));
+    rect.setAttribute('width', barWidth.toFixed(2));
+    rect.setAttribute('height', barHeight.toFixed(2));
+    bars.append(rect);
+  });
+
+  // The y scale's top, and the generations the axis covers, with the width stated:
+  // 5 generations per bin and 1 per bin are indistinguishable at a glance, and the
+  // wider one is the one that can hide a second hump inside a single bar.
+  const topLabel = svgEl('text');
+  topLabel.setAttribute('x', String(box.right + 4));
+  topLabel.setAttribute('y', String(box.top + 4));
+  topLabel.textContent = String(top);
+  const last = binRange(bins, count - 1);
+  const spanLabel = svgEl('text');
+  spanLabel.setAttribute('x', String(box.left));
+  spanLabel.setAttribute('y', String(height - 3));
+  spanLabel.textContent = `${bins.first}–${last.hi} gen · ${bins.step}/bin`;
+  axis.append(topLabel, spanLabel);
+
+  chartState.geometry = { kind: 'spread', box, bins, slot, top };
 }
 
 /** What the pointer is over, kept so the next layout draw can put the cursor back. */
@@ -2598,6 +2727,10 @@ function chartCursor(event) {
   }
   const rect = chart.getBoundingClientRect();
   const x = event.clientX - rect.left;
+  if (geometry.kind === 'spread') {
+    spreadCursor(cursor, geometry, x);
+    return;
+  }
   const { box, xAt, points } = geometry;
 
   let best = points[0];
@@ -2627,6 +2760,65 @@ function chartCursor(event) {
   cursor.removeAttribute('hidden');
 }
 
+/**
+ * Which instrument the strip is showing: a series over time, or the population's
+ * generation distribution right now.
+ *
+ * Kept apart from `series` because they are not alternatives to each other -- the
+ * series choice survives a trip through the distribution and comes back with the
+ * same line selected. The remembered key is separate for the same reason: forgetting
+ * which instrument was on screen and forgetting which line was selected are
+ * different losses.
+ */
+const KIND_KEY = 'tsbugs.chart';
+const CHART_KINDS = ['history', 'spread'];
+let chartKind = 'history';
+
+function showChartKind(name) {
+  const next = CHART_KINDS.includes(name) ? name : 'history';
+  chartKind = next;
+  document.body.dataset.chart = next;
+  for (const button of document.querySelectorAll('#chartKind button')) {
+    button.setAttribute('aria-pressed', button.dataset.kind === next ? 'true' : 'false');
+  }
+  drawChart();
+  try {
+    storage?.setItem(KIND_KEY, next);
+  } catch { /* see showTab */ }
+}
+
+/**
+ * The bar under the pointer.
+ *
+ * Hovering a gap is a real reading -- "nothing is alive at generation 12" is the
+ * fact that separates two populations -- so an empty bin reports zero rather than
+ * the cursor vanishing, which would read as the pointer having left the chart.
+ */
+function spreadCursor(cursor, geometry, x) {
+  const { box, bins, slot, top } = geometry;
+  const index = Math.min(bins.counts.length - 1, Math.max(0, Math.floor((x - box.left) / slot)));
+  const value = bins.counts[index];
+  const { lo, hi } = binRange(bins, index);
+  const px = box.left + (index + 0.5) * slot;
+  const barHeight = value === 0 ? 0 : Math.max(1, (value / top) * (box.bottom - box.top));
+
+  const lineEl = cursor.querySelector('line');
+  const dot = cursor.querySelector('circle');
+  const text = cursor.querySelector('text');
+  lineEl.setAttribute('x1', px.toFixed(2));
+  lineEl.setAttribute('x2', px.toFixed(2));
+  lineEl.setAttribute('y1', String(box.top));
+  lineEl.setAttribute('y2', String(box.bottom));
+  dot.setAttribute('cx', px.toFixed(2));
+  dot.setAttribute('cy', (box.bottom - barHeight).toFixed(2));
+  const flip = px > box.left + (box.right - box.left) * 0.7;
+  text.setAttribute('x', (flip ? px - 4 : px + 5).toFixed(2));
+  text.setAttribute('y', String(box.top + 9));
+  text.setAttribute('text-anchor', flip ? 'end' : 'start');
+  text.textContent = `${value} @ gen ${lo === hi ? lo : `${lo}–${hi}`}`;
+  cursor.removeAttribute('hidden');
+}
+
 const chart = $('chart');
 chart.addEventListener('pointermove', chartCursor);
 chart.addEventListener('pointerleave', () => chart.querySelector('.cursor').setAttribute('hidden', ''));
@@ -2639,6 +2831,10 @@ for (const button of document.querySelectorAll('#chartTabs button')) {
     }
     drawChart();
   });
+}
+
+for (const button of document.querySelectorAll('#chartKind button')) {
+  button.addEventListener('click', () => showChartKind(button.dataset.kind));
 }
 
 // ---------------------------------------------------------------- start
@@ -2663,5 +2859,6 @@ function remembered(key, fallback) {
 }
 
 showLayout(remembered(LAYOUT_KEY, 'split'));
+showChartKind(remembered(KIND_KEY, 'history'));
 showTab(remembered(TAB_KEY, 'params'));
 requestAnimationFrame(frame);

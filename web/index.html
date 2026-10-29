@@ -196,10 +196,18 @@
   #chart .axis text { fill: var(--dim); font: 10px var(--mono); }
   #chart .line { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
   #chart .area { fill: url(#chartFill); stroke: none; }
+  /* `hidden` is an HTML attribute and does not hide an SVG element: without this the
+     cursor group stays laid out and its circle draws at the origin, a 5px accent dot
+     parked in the chart's top-left corner whenever the pointer is elsewhere. */
+  #chart .cursor[hidden] { display: none; }
   #chart .cursor line { stroke: rgba(255, 255, 255, .35); stroke-width: 1; }
   #chart .cursor circle { fill: var(--accent); }
   #chart .cursor text { fill: var(--text); font: 10px var(--mono); }
   #chart .empty { fill: var(--dim); font: 11px var(--sans); }
+  #chart .bars rect { fill: var(--accent); fill-opacity: .5; }
+  /* The series tabs pick a line to draw; a distribution has no series, so showing
+     them would offer a control that does nothing. */
+  body[data-chart="spread"] #chartTabs { display: none; }
 
   /* ------------------------------------------------------------------ rail */
   .rail {
@@ -479,6 +487,10 @@
 
     <div class="chartArea">
       <div class="chartHead">
+        <div class="seg" id="chartKind" role="group" aria-label="chart kind">
+          <button type="button" data-kind="history" aria-pressed="true">History</button>
+          <button type="button" data-kind="spread" aria-pressed="false">Spread</button>
+        </div>
         <div class="seg" id="chartTabs" role="tablist" aria-label="chart series">
           <button type="button" role="tab" data-series="population" aria-selected="true">Population</button>
           <button type="button" role="tab" data-series="generation" aria-selected="false">Generation</button>
@@ -497,6 +509,7 @@
         <g class="grid"></g>
         <path class="area"></path>
         <path class="line"></path>
+        <g class="bars"></g>
         <g class="axis"></g>
         <g class="cursor" hidden><line></line><circle r="2.5"></circle><text></text></g>
       </svg>
