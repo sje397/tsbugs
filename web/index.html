@@ -340,6 +340,12 @@
   }
   #dis div.cur { background: rgba(62, 214, 180, .14); }
   #dis div.mid { background: rgba(224, 145, 106, .14); }
+  /* The address and an address operand are both places in the genome: clicking
+     either re-decodes the listing from there. They read as one, and differently
+     from the bytes, which are the other thing a click can do in this box. */
+  #dis span.addr, #dis span.tgt { cursor: pointer; border-radius: 2px; }
+  #dis span.addr:hover, #dis span.tgt:hover { background: #243039; outline: 1px solid #3d5260; }
+  #dis span.tgt { text-decoration: underline dotted; text-underline-offset: 2px; }
   #dis span.b { cursor: pointer; border-radius: 2px; }
   #dis span.b:hover { background: #243039; outline: 1px solid #3d5260; }
   #dis span.cursor { color: var(--gen); }

@@ -37,16 +37,15 @@ import { INPUTS, Instruction, MAX_I, OPERAND_BYTES, OperandRole, OUTPUTS, OPERAN
  * jumps to; an index into the inputs or outputs, where the byte is reduced to
  * the width of that channel list; or a value used as it stands.
  *
- * `stored` is the number as it sits in the genome, carried only where the VM
- * changed it — so the row can admit the reduction instead of showing a value
- * that does not appear in the byte column. For an address that is the packed
- * value before the modulo on the genome length; for an input or output it is the
- * operand byte before the modulo on the channel count.
+ * `value` is what the machine uses. The number as stored is not carried
+ * alongside it: the byte column already shows it, and the panel states once that
+ * a stored byte runs as its modulo, so repeating the arithmetic on every row
+ * buried the decode it was meant to explain.
  */
 export type Operand =
-  | { readonly role: 'address'; readonly value: number; readonly stored: number | null }
-  | { readonly role: 'input'; readonly value: number; readonly stored: number }
-  | { readonly role: 'output'; readonly value: number; readonly stored: number }
+  | { readonly role: 'address'; readonly value: number }
+  | { readonly role: 'input'; readonly value: number }
+  | { readonly role: 'output'; readonly value: number }
   | { readonly role: 'value'; readonly value: number };
 
 export interface DecodedInstruction {
@@ -93,10 +92,8 @@ export interface DecodedInstruction {
  * The reductions restated here are step()'s, in the one place a listing can see
  * them: an address is `((high << 8) + low) % genome length`, an input is
  * `byte % INPUTS`, an output is `byte % OUTPUTS`, and an arithmetic operand is
- * the byte itself. `stored` carries the number before the reduction so the row
- * can say so — a line reading `input 5` beside a stored byte of 225 is a value
- * that appears nowhere in the byte column, which is the same defect one layer
- * along from showing no operand at all.
+ * the byte itself. Only the reduced value is carried — it is what the machine
+ * uses, and the raw byte is already in the byte column.
  */
 function operandOf(role: OperandRole, bytes: number[], genomeLength: number): Operand | null {
   switch (role) {
@@ -106,15 +103,14 @@ function operandOf(role: OperandRole, bytes: number[], genomeLength: number): Op
     case OperandRole.Address: {
       // make_addy(): low byte first, then modulo the genome length.
       const packed = (bytes[1] << 8) + bytes[0];
-      const value = packed % genomeLength;
-      return { role: 'address', value, stored: packed !== value ? packed : null };
+      return { role: 'address', value: packed % genomeLength };
     }
 
     case OperandRole.Input:
-      return { role: 'input', value: bytes[0] % INPUTS, stored: bytes[0] };
+      return { role: 'input', value: bytes[0] % INPUTS };
 
     case OperandRole.Output:
-      return { role: 'output', value: bytes[0] % OUTPUTS, stored: bytes[0] };
+      return { role: 'output', value: bytes[0] % OUTPUTS };
 
     case OperandRole.Value:
       return { role: 'value', value: bytes[0] };

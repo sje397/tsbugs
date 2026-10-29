@@ -69,8 +69,7 @@ test('a linear sweep covers every byte exactly once, in order', () => {
 
   const load = decoded[0];
   assert.deepEqual(load.operandBytes, [0x10, 0x00]);
-  assert.equal(addressOf(load).value, 0, 'little-endian: low byte is 0x10, high is 0x00, so the address is 0x0010 % 16');
-  assert.equal(addressOf(load).stored, 16, 'the operand names address 16, which a 16-byte genome reduces to 0 — the listing states both because only the raw one explains the oddity');
+  assert.equal(addressOf(load).value, 0, 'little-endian: low byte is 0x10, high is 0x00, so the address is 0x0010 % 16 — the byte column holds the 0x10 that produced it');
   assert.equal(load.wrapped, false);
 });
 
@@ -103,7 +102,6 @@ test('an instruction whose operands fall past the end reads them from the start,
   assert.deepEqual(last.operandBytes, [rom[7], rom[0]], 'operand two comes from address 0, not from past the end');
   assert.equal(last.wrapped, true, 'a wrapped read is otherwise unreadable and must be visible');
   assert.equal(addressOf(last).value, ((rom[0] << 8) + rom[7]) % rom.length);
-  assert.equal(addressOf(last).stored, (rom[0] << 8) + rom[7], 'the un-reduced address explains why the listing looks odd');
 });
 
 test('an instruction at the last byte wraps its opcode advance without claiming its operands wrapped', () => {
@@ -121,20 +119,14 @@ test('an instruction at the last byte wraps its opcode advance without claiming 
   assert.equal(last.wrapped, false, 'the opcode wrap is not an operand wrap and must not be reported as one');
 });
 
-test('a two-byte operand is reduced modulo the genome length, and the raw value is reported when it differed', () => {
-  // 0xff 0xff forms 0xffff = 65535; against a 16-byte genome the VM uses 15.
-  const rom = genome(Instruction.JMP, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-  const [first] = decodeLinear(rom);
+test('a two-byte operand is reduced modulo the genome length, in both directions', () => {
+  // 0xff 0xff forms 0xffff = 65535; against a 16-byte genome the VM uses 15, and
+  // an operand that lands inside the genome is left alone.
+  const reduced = genome(Instruction.JMP, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  assert.equal(addressOf(decodeLinear(reduced)[0]).value, 0xffff % 16);
 
-  assert.equal(addressOf(first).value, 0xffff % 16);
-  assert.equal(addressOf(first).stored, 0xffff, 'the un-reduced address is what explains the oddity');
-});
-
-test('an instruction whose operands do not need the modulo reports no raw address', () => {
-  const rom = genome(Instruction.LOAD, 0x05, 0x00, 0, 0, 0, 0, 0, 0);
-  const [first] = decodeLinear(rom);
-  assert.equal(addressOf(first).value, 5);
-  assert.equal(addressOf(first).stored, null, 'nothing was reduced, so there is no second number to explain');
+  const plain = genome(Instruction.LOAD, 0x05, 0x00, 0, 0, 0, 0, 0, 0);
+  assert.equal(addressOf(decodeLinear(plain)[0]).value, 5);
 });
 
 test('a decoding can start anywhere in the genome, and wraps to cover it once', () => {
@@ -206,10 +198,10 @@ test('every opcode decodes its operand as the opcode reads it', () => {
   // channel byte above the input count is reduced, and an arithmetic operand is
   // not, which is the distinction a reader uses to tell `input 5` from `200`.
   const [input] = decodeLinear(genome(Instruction.IN, 0xe1));
-  assert.deepEqual(input.operand, { role: 'input', value: 0xe1 % INPUTS, stored: 0xe1 });
+  assert.deepEqual(input.operand, { role: 'input', value: 0xe1 % INPUTS });
 
   const [output] = decodeLinear(genome(Instruction.OUT, 0xe1));
-  assert.deepEqual(output.operand, { role: 'output', value: 0xe1 % OUTPUTS, stored: 0xe1 });
+  assert.deepEqual(output.operand, { role: 'output', value: 0xe1 % OUTPUTS });
 
   const [value] = decodeLinear(genome(Instruction.MUL, 0xe1));
   assert.deepEqual(value.operand, { role: 'value', value: 0xe1 });

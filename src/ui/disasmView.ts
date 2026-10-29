@@ -3,8 +3,8 @@
  *
  * The page holds the DOM; this holds the arithmetic, so the cases that are easy
  * to get quietly wrong can be asserted rather than eyeballed. The two that
- * matter: which listing row the instruction pointer is standing in, and whether
- * a row should admit that the byte in the genome is not the opcode the VM runs.
+ * matter: which listing row the instruction pointer is standing in, and what an
+ * operand byte actually means to the machine.
  *
  * The listing is one linear sweep of the genome from address 0 (decodeLinear).
  * Execution is not a linear sweep — it is whatever addresses the program jumps
@@ -14,7 +14,6 @@
  */
 
 import type { DecodedInstruction, Operand } from '../sim/disasm.js';
-import { INPUTS, OUTPUTS } from '../sim/processor.js';
 
 /**
  * The index of the row whose byte range contains `ip`, or -1 if there is none.
@@ -39,6 +38,38 @@ export const hex2 = (n: number): string => n.toString(16).padStart(2, '0');
 export const hex4 = (n: number): string => n.toString(16).padStart(4, '0');
 
 /**
+ * Where the listing decodes from.
+ *
+ * A listing is one sweep of the genome from some starting address, and WHICH
+ * address matters: an opcode's length depends on which instruction it is, so a
+ * sweep from 0 and the machine's own reading of the same bytes can disagree about
+ * where instructions start. Where the machine jumps to an address the sweep read
+ * as operand bytes, the code it runs is not a row of that listing at all.
+ *
+ * So the start is a choice the reader makes. 0 is the program in address order;
+ * the instruction pointer is what is actually running; a jump target is how a call
+ * is followed into its subroutine. This normalises an address into the genome,
+ * because an anchor arrives from a click on a target that may be anything at all.
+ */
+export function normaliseAnchor(address: number, length: number): number {
+  if (length <= 0) return 0;
+  return ((address % length) + length) % length;
+}
+
+/**
+ * The address an operand points at, or null when it points at nothing.
+ *
+ * Only an address-role operand is a place in the genome: the eight two-byte
+ * opcodes read, write or jump to it, and a reader can follow it. An `input 5`, an
+ * `output 2` or a bare value of 200 are numbers that look like addresses and are
+ * not — making them clickable would send the listing to a place the row never
+ * mentions.
+ */
+export function operandTarget(operand: Operand | null): number | null {
+  return operand !== null && operand.role === 'address' ? operand.value : null;
+}
+
+/**
  * Every byte of a row, with the genome slot it occupies — the first part of the
  * line, and the part an editor has to address.
  *
@@ -61,60 +92,62 @@ export function rowBytes(ins: DecodedInstruction): Array<{ address: number; hex:
  * to. An input or an output is a channel number, and is named as one. An
  * arithmetic operand is the byte itself, as a value.
  *
- * Where the VM reduced the stored number to get here, the row says so in the
- * same words the opcode modulo uses, because the number that produced it is
- * otherwise absent from the line: `#0 (16 wrapped)` for an address past the end
- * of the genome, `input 5 (225 mod 20)` for a channel byte above the 20 inputs.
- * The reductions are the point — a genome full of mutation-written bytes spends
- * most of its time being reduced — so a row that quietly showed the reduced
- * value would be the hardest kind of line to read: correct and inexplicable.
+ * Only the value the machine uses is shown. The number stored in the genome is
+ * already in the byte column, and where the VM reduced it the reduction is
+ * arithmetic a reader can do; printing it on the row as well put two numbers and
+ * a `mod` beside every operand and made the listing harder to scan than the
+ * defect it was explaining. The panel states the modulo once, in its footer,
+ * which is where a rule about the whole listing belongs.
  */
 export function operandText(operand: Operand | null): string {
   if (operand === null) return '';
 
   switch (operand.role) {
     case 'address':
-      return `  #${operand.value}`
-        + (operand.stored === null ? '' : ` (${operand.stored} wrapped)`);
+      return `  #${operand.value}`;
 
     case 'input':
-      return `  input ${operand.value}`
-        + (operand.stored === operand.value ? '' : ` (${operand.stored} mod ${INPUTS})`);
+      return `  input ${operand.value}`;
 
     case 'output':
-      return `  output ${operand.value}`
-        + (operand.stored === operand.value ? '' : ` (${operand.stored} mod ${OUTPUTS})`);
+      return `  output ${operand.value}`;
 
     case 'value':
       return `  ${operand.value}`;
   }
 }
 
-/**
- * The rest of the line: the mnemonic, then — where they differ from what the
- * reader would guess — the operand and the modulo.
- *
- * The stored byte is shown as well as the opcode because a genome written by
- * mutation holds byte values the machine never sees directly: `byte % MAX_I` is
- * what executes, and a bug whose genome is full of 245s runs POPs.
- *
- * The modulo is spelled `mod` rather than `%` deliberately. MAX_I is 27, so the
- * `%` form rendered as `223%27=7` — which reads as the URL-escape `%27` (an
- * apostrophe) followed by `=7`, and it appeared on 3,671 of 4,102 rows of a
- * single mutated genome, so it read as corruption rather than as arithmetic.
- * A notation that collides with an encoding has to give way: `mod` cannot be
- * mistaken for a percent-escape and needs no key.
- */
-export function rowTail(ins: DecodedInstruction, maxI: number): string {
-  const operand = operandText(ins.operand);
-  const wrapped = ins.wrapped ? '  [operands wrap]' : '';
-  const modulo = ins.byte !== ins.opcode ? `  ${ins.byte} mod ${maxI} = ${ins.opcode}` : '';
+/** How wide the mnemonic column is, so the operand lines up down the listing. */
+export const MNEMONIC_WIDTH = 11;
 
-  return `${ins.name.padEnd(11)}${operand}${wrapped}${modulo}`;
+/** What a row says when it read part of its operand from the start of the genome. */
+export const WRAP_MARKER = '  [operands wrap]';
+
+/**
+ * The rest of the line: the mnemonic, then the operand.
+ *
+ * The byte column may hold a value the machine never sees directly — `byte %
+ * MAX_I` is what executes, so a bug whose genome is full of 245s runs POPs — and
+ * the row does not restate that reduction. It was tried both ways round: first as
+ * `byte%MAX_I=opcode`, which with MAX_I at 27 rendered `223%27=7` and read as the
+ * URL-escape for an apostrophe on 3,671 of 4,102 rows of one mutated genome; then
+ * as `${byte} mod ${maxI} = ${opcode}`, which is honest but appears on nearly
+ * every row of a mutable genome and so annotates nothing. What survives is the
+ * stored byte in its own column and one line of legend under the listing.
+ *
+ * The page builds the same tail out of the same pieces rather than using this
+ * string, because an address operand has to be a span it can make clickable. The
+ * pieces are exported for exactly that reason, and a test holds the two together.
+ */
+export function rowTail(ins: DecodedInstruction): string {
+  const operand = operandText(ins.operand);
+  const wrapped = ins.wrapped ? WRAP_MARKER : '';
+
+  return `${ins.name.padEnd(MNEMONIC_WIDTH)}${operand}${wrapped}`;
 }
 
 /** One listing row as text: the bytes, in a fixed column, then the rest. */
-export function formatInstruction(ins: DecodedInstruction, maxI: number): string {
+export function formatInstruction(ins: DecodedInstruction): string {
   const bytes = rowBytes(ins).map((b) => b.hex).join(' ').padEnd(11);
-  return `${bytes}  ${rowTail(ins, maxI)}`;
+  return `${bytes}  ${rowTail(ins)}`;
 }

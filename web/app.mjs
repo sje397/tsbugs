@@ -26,7 +26,10 @@
 import { PetriDish, ViewMode } from '../dist/src/sim/dish.js';
 import { decodeLinear } from '../dist/src/sim/disasm.js';
 import { MAX_I } from '../dist/src/sim/processor.js';
-import { hex2, hex4, instructionIndexAt, isMidInstruction, rowBytes, rowTail } from '../dist/src/ui/disasmView.js';
+import {
+  MNEMONIC_WIDTH, WRAP_MARKER, hex2, hex4, instructionIndexAt, isMidInstruction, normaliseAnchor,
+  operandTarget, operandText, rowBytes,
+} from '../dist/src/ui/disasmView.js';
 import {
   ENERGY_LAYOUTS, GROUP_NOTES, GROUP_ORDER, GROUP_TITLES,
   discoverGroups, label, panelFields,
@@ -639,11 +642,20 @@ function renderPresets() {
  * what that loses is everything worth watching: where the pointer is, what the
  * accumulator is doing, what the bug can see this tick.
  *
- * The code listing is decodeLinear from address 0: one decode of the genome in
- * address order, with the instruction ip currently sits in highlighted. A jump can
- * land in the middle of a byte range that sweep read as operands -- that is real,
- * it is how the machine runs, and the listing says so rather than re-decoding from
- * ip and pretending the stream is contiguous.
+ * The code listing is one decode of the genome, with the instruction ip currently
+ * sits in highlighted. Which address it decodes FROM is the reader's choice, and
+ * that matters more than it sounds: an instruction's length depends on which
+ * instruction it is, so a sweep from 0 and the machine's own reading of the same
+ * bytes can disagree about where instructions start. Where the machine jumps to an
+ * address the sweep read as operand bytes, the code it actually runs is not a row
+ * of that listing at all.
+ *
+ * So the anchor is explicit. 0 is the program in address order; the instruction
+ * pointer is what is running; a jump or call target is how a SUBROUTINE is followed
+ * into its body. Clicking an address or a #target moves the anchor, and the footer
+ * carries the two anchors that mean something plus a way back. Re-anchoring
+ * rebuilds the panel, which is why it is a click and not a live follow: a listing
+ * that re-tiled itself on every jump would move the addresses under the reader.
  */
 let watched = null;      // the Bug under inspection, or null
 let watchedHash = undefined;
@@ -666,6 +678,15 @@ let bugView = null;
 
 /** The last thing said about an edit, so a rebuild does not swallow it. */
 let bugNote = null;
+
+/** Where the code listing decodes from: an address in the genome, 0 by default. */
+let anchorAt = 0;
+
+/** Anchors left behind by following an address or a target, newest last. */
+let anchorTrail = [];
+
+/** How far back a reader can follow a chain of calls. */
+const ANCHOR_TRAIL_MAX = 16;
 
 /** How far from the click to look for a bug, in screen pixels. A cell is a few
  *  pixels across at the fitted zoom, so a reach in cells would shrink to nothing
@@ -806,6 +827,8 @@ function selectBug(hash) {
   watchedHash = target;
   watchedDied = null;
   bugView = null;          // a new subject, so the panel is rebuilt
+  anchorAt = 0;            // and a new program, so the old anchor means nothing
+  anchorTrail = [];
   pickedNear = from;
   pauseForInspection();
   showTab('bug');          // the selection has to be visible, or the click reads as having failed
@@ -951,7 +974,8 @@ function refreshBug() {
  */
 function renderBugPanel(bug, hash) {
   const genome = bug.dna.data;
-  const listing = decodeLinear(genome);
+  const anchor = normaliseAnchor(anchorAt, genome.length);
+  const listing = decodeLinear(genome, anchor);
 
   const host = $('bug');
   host.textContent = '';
@@ -1055,10 +1079,12 @@ function renderBugPanel(bug, hash) {
   host.append(dis);
 
   const tail = el('div', 'note',
-    `${listing.length} instructions decoded from address 0 -- click a byte to edit it`
+    `${listing.length} instructions decoded from address ${hex4(anchor)} -- click a byte to edit it,`
+    + ' an address or a #target to decode from there'
     + ` -- stack ${dish.worldParams.stackSize} bytes`
     + `; a stored byte above ${MAX_I - 1} runs as its modulo`);
   host.append(tail);
+  host.append(anchorControls(bug, anchor));
 
   const note = el('div', 'msg');
   host.append(note);
@@ -1093,7 +1119,13 @@ function renderBugPanel(bug, hash) {
 function bugRow(ins) {
   const row = document.createElement('div');
   const cursor = el('span', 'cursor', ' ');
-  row.append(cursor, document.createTextNode(` ${hex4(ins.address)}  `));
+
+  // The address is the row's own anchor: decoding from it is what turns a listing
+  // read as one sweep into the machine's reading of the bytes at that address.
+  const address = el('span', 'addr', hex4(ins.address));
+  address.dataset.anchor = String(ins.address);
+  address.title = `decode the listing from ${hex4(ins.address)}`;
+  row.append(cursor, document.createTextNode(' '), address, document.createTextNode('  '));
 
   // Every byte is its own span, because every byte is its own edit. The slot comes
   // from the decode rather than being computed from the row's address, because a
@@ -1110,9 +1142,111 @@ function bugRow(ins) {
   const width = rowBytes(ins).map((byte) => byte.hex).join(' ').length;
   row.append(
     document.createTextNode(' '.repeat(Math.max(0, 11 - width))),
-    document.createTextNode(`  ${rowTail(ins, MAX_I)}`),
+    document.createTextNode(`  ${ins.name.padEnd(MNEMONIC_WIDTH)}`),
   );
+
+  // The operand is a span rather than part of one text node because an address
+  // points somewhere: clicking `#258` decodes the listing from 258, which is how a
+  // SUBROUTINE is followed into the code it calls. A value or a channel number is
+  // not a place in the genome and stays plain text -- `200` on an arithmetic opcode
+  // is a number, not address 200.
+  const operand = operandText(ins.operand);
+  const target = operandTarget(ins.operand);
+  if (target === null) {
+    row.append(document.createTextNode(operand));
+  } else {
+    const link = el('span', 'tgt', operand.trim());
+    link.dataset.anchor = String(target);
+    link.title = `decode the listing from #${target}`;
+    row.append(document.createTextNode('  '), link);
+  }
+  if (ins.wrapped) row.append(document.createTextNode(WRAP_MARKER));
+
+  for (const span of row.querySelectorAll('span.addr, span.tgt')) {
+    span.addEventListener('click', (event) => {
+      event.stopPropagation();
+      reanchor(Number(span.dataset.anchor));
+    });
+  }
   return row;
+}
+
+/**
+ * The two anchors that mean something, and the way back from a followed call.
+ *
+ * Anchoring rebuilds the panel, so it is a click rather than a live follow: the
+ * listing re-tiles when the anchor moves, and a listing that re-tiled on every jump
+ * would move every address under the reader. The instruction pointer is one click
+ * away instead, which is also the answer when the machine is standing somewhere the
+ * current decode cannot show as a row.
+ */
+function anchorControls(bug, anchor) {
+  const bar = el('div', 'seg');
+  const ip = registersOf(bug.processor).ip;
+
+  const go = (label, address, title) => {
+    const button = el('button', '', label);
+    button.type = 'button';
+    button.title = title;
+    button.dataset.anchor = String(address);
+    button.addEventListener('click', () => reanchor(address));
+    return button;
+  };
+
+  const fromZero = go('0', 0, 'decode the listing from address 0000 -- the program in address order');
+  fromZero.setAttribute('aria-pressed', String(anchor === 0));
+  const fromIp = go('ip', ip, `decode the listing from the instruction pointer (${ip})`);
+  fromIp.setAttribute('aria-pressed', String(anchor === ip));
+
+  bar.append(fromZero, fromIp);
+  if (anchorTrail.length > 0) {
+    const back = el('button', '', 'back');
+    back.type = 'button';
+    back.title = `return to the previous anchor (${hex4(anchorTrail[anchorTrail.length - 1])})`;
+    back.addEventListener('click', anchorBack);
+    bar.append(back);
+  }
+  return bar;
+}
+
+/**
+ * Move the listing's anchor and rebuild the panel around it.
+ *
+ * The rebuild is the same one an edit costs, and for the same reason: every row's
+ * decode depends on where the previous row ended. What is carried across is the
+ * scroll position, except that a deliberate re-anchor starts at the top, because
+ * the row the reader asked for is the first one in the new listing.
+ */
+function reanchor(address) {
+  const bug = watched;
+  if (bug === null) return;
+  const length = bug.dna.data.length;
+  if (length === 0) return;
+
+  const here = normaliseAnchor(anchorAt, length);
+  const next = normaliseAnchor(address, length);
+  if (next !== here) {
+    anchorTrail.push(here);
+    if (anchorTrail.length > ANCHOR_TRAIL_MAX) anchorTrail.shift();
+    anchorAt = next;
+  }
+  rebuildBugPanel(bug, 0);
+}
+
+/** Return to the previous anchor, undoing one followed call. */
+function anchorBack() {
+  if (anchorTrail.length === 0) return;
+  anchorAt = anchorTrail.pop();
+  rebuildBugPanel(watched, 0);
+}
+
+/** Rebuild the panel, keeping the listing's scroll position where asked. */
+function rebuildBugPanel(bug, scroll) {
+  const hash = locateWatched();
+  if (bug === null || hash === null) return;
+  renderBugPanel(bug, hash);
+  const dis = $('dis');
+  if (dis !== null) dis.scrollTop = scroll;
 }
 
 /**

@@ -3,8 +3,7 @@
  *
  * These are the questions the page asks of a decoded genome, and the ones a
  * reader would be misled by if the answer were subtly wrong: which row the
- * instruction pointer is standing in, and whether a row is hiding a modulo
- * between what the genome stores and what the machine runs.
+ * instruction pointer is standing in, and what an operand byte means.
  *
  * Both are asserted against real decoded genomes as well as synthetic rows,
  * because the fixture that matters — a row whose operands wrap the end of the
@@ -18,7 +17,8 @@ import { decodeLinear, type DecodedInstruction } from '../src/sim/disasm.js';
 import { INPUTS, Instruction, MAX_I, OPERAND_BYTES, OUTPUTS } from '../src/sim/processor.js';
 import { Rng } from '../src/sim/rng.js';
 import {
-  formatInstruction, hex4, instructionIndexAt, isMidInstruction, operandText, rowBytes, rowTail,
+  formatInstruction, hex4, instructionIndexAt, isMidInstruction, normaliseAnchor, operandTarget,
+  operandText, rowBytes, rowTail,
 } from '../src/ui/disasmView.js';
 
 /** A genome of the requested length, from a stated seed. */
@@ -134,47 +134,47 @@ test('a row whose operands wrap the genome does not steal the address it wraps t
   assert.equal(instructionIndexAt(listing, wrapped.address), listing.indexOf(wrapped));
 });
 
-test('an instruction is shown with the bytes it stores, and says when they are not the opcode', () => {
+test('an instruction leads with the bytes it stores, and does not restate the opcode modulo', () => {
   const plain: DecodedInstruction = {
     address: 4, byte: 7, opcode: 7, name: 'IN', operandBytes: [9], byteAddresses: [4, 5],
-    wrapped: false, operand: { role: 'input', value: 9, stored: 9 }, length: 2,
+    wrapped: false, operand: { role: 'input', value: 9 }, length: 2,
   };
-  assert.equal(formatInstruction(plain, MAX_I), '07 09        IN           input 9');
+  assert.equal(formatInstruction(plain), '07 09        IN           input 9');
 
+  // A genome byte above the opcode count executes as its modulo. The row shows the
+  // byte and the mnemonic and stops there: the reduction was printed on the row
+  // once, first as `34%27=7` (which reads as a percent-escape) and then as
+  // `34 mod 27 = 7` (which appears on most rows of a mutable genome, so it
+  // annotates nothing). The byte column carries the stored number; the panel's
+  // footer states the rule once.
   const modulo: DecodedInstruction = { ...plain, byte: 34, opcode: 34 % MAX_I };
-  const annotated = formatInstruction(modulo, MAX_I);
-  assert.ok(annotated.startsWith('22 09'), 'the byte as stored leads the row, not the opcode the VM runs');
-  assert.ok(
-    annotated.includes(`34 mod ${MAX_I} = ${34 % MAX_I}`),
-    'a genome byte above the opcode count is shown with the modulo the VM applied',
-  );
-  // `%` next to this VM's opcode count (27) renders `223%27=7`, which reads as the
-  // URL-escape for an apostrophe. It is arithmetic, not an encoding, and the row
-  // has to be unable to be mistaken for one.
-  assert.doesNotMatch(annotated, /%/, 'no row may contain a percent sign — `%27` reads as an escape');
-  // The annotation goes after the operand, so the mnemonic column is unmoved —
-  // a listing whose columns shift per row is one nobody can scan.
-  assert.equal(
-    annotated.indexOf('IN'),
-    formatInstruction(plain, MAX_I).indexOf('IN'),
-    'a row that needs the modulo note is still aligned with the rows that do not',
-  );
+  const line = formatInstruction(modulo);
+  assert.ok(line.startsWith('22 09'), 'the byte as stored leads the row, not the opcode the VM runs');
+  assert.equal(line, '22 09        IN           input 9');
+  assert.doesNotMatch(line, /%/, 'no row may contain a percent sign — `%27` reads as an escape');
+  assert.doesNotMatch(line, /mod/, 'the reduction is not restated on the row');
 });
 
-test('an operand address is shown, and a wrapped or moduloed one admits it', () => {
+test('an operand address is shown, and a wrapped row marks itself', () => {
   const jump: DecodedInstruction = {
     address: 9, byte: 8, opcode: 8, name: 'OUT', operandBytes: [1, 2], byteAddresses: [9, 10, 11],
-    wrapped: false, operand: { role: 'address', value: 258, stored: null }, length: 3,
+    wrapped: false, operand: { role: 'address', value: 258 }, length: 3,
   };
-  assert.match(formatInstruction(jump, MAX_I), /#258/);
-  assert.doesNotMatch(formatInstruction(jump, MAX_I), /wrapped/);
+  assert.equal(formatInstruction(jump), '08 01 02     OUT          #258');
+  assert.doesNotMatch(formatInstruction(jump), /wrapped/);
 
-  const wrappedJump: DecodedInstruction = {
-    ...jump, wrapped: true, operand: { role: 'address', value: 2, stored: 258 },
-  };
-  const line = formatInstruction(wrappedJump, MAX_I);
-  assert.match(line, /#2 \(258 wrapped\)/, 'the address before the modulo is the only way to see the wrap happened');
-  assert.match(line, /\[operands wrap\]/);
+  // A real wrapped row: six INCs, then LOAD at address 6 reading its second operand
+  // from address 0. The marker is the only thing on the line describing the wrap;
+  // the address shown is the one the machine jumps to, not the packed number.
+  const rom = new Uint8Array(8);
+  for (let i = 0; i < 6; i++) rom[i] = Instruction.INC;
+  rom[6] = Instruction.LOAD;
+  rom[7] = 0x05;
+  const wrapped = decodeLinear(rom).find((ins) => ins.wrapped);
+  assert.ok(wrapped, 'the fixture is meant to produce a wrapped row');
+  const line = formatInstruction(wrapped);
+  assert.match(line, /#\d+  \[operands wrap\]/, 'the address, and the fact that the bytes wrapped');
+  assert.doesNotMatch(line, /mod|wrapped\)/, 'the reduction is not restated beside the address');
 });
 
 test('a one-byte operand says what it is, on every opcode that takes one', () => {
@@ -192,14 +192,14 @@ test('a one-byte operand says what it is, on every opcode that takes one', () =>
   // And the three meanings are distinguishable, because a reader needs to know
   // whether 200 is a channel number, a slot number, or the value itself.
   assert.equal(operandText(decodeLinear(Uint8Array.from([Instruction.IN, 200]))[0].operand),
-    `  input ${200 % INPUTS} (200 mod ${INPUTS})`);
+    `  input ${200 % INPUTS}`);
   assert.equal(operandText(decodeLinear(Uint8Array.from([Instruction.OUT, 200]))[0].operand),
-    `  output ${200 % OUTPUTS} (200 mod ${OUTPUTS})`);
+    `  output ${200 % OUTPUTS}`);
   assert.equal(operandText(decodeLinear(Uint8Array.from([Instruction.ADD, 200]))[0].operand),
     '  200', 'an arithmetic operand is the byte as it stands — nothing reduces it');
 
-  // An operand that needed no reduction says nothing extra, so the annotation
-  // stays a signal rather than becoming the default.
+  // A reduced channel byte names the channel, not the byte: `input 0` on a stored
+  // 200 is the machine's reading, and the 200 is in the byte column.
   assert.equal(operandText(decodeLinear(Uint8Array.from([Instruction.IN, 3]))[0].operand), '  input 3');
 });
 
@@ -216,7 +216,7 @@ test('no row of a mutable genome reads as a percent-escape', () => {
     + 'rather than annotating it',
   );
   for (const ins of listing) {
-    assert.doesNotMatch(formatInstruction(ins, MAX_I), /%/, `row at ${ins.address} reads as an escape`);
+    assert.doesNotMatch(formatInstruction(ins), /%/, `row at ${ins.address} reads as an escape`);
   }
 });
 
@@ -262,7 +262,66 @@ test('a row names the slot each of its bytes lives in, wrapped rows included', (
   const listing = decodeLinear(genomeOf(2024, 500));
   const multi = listing.find((ins) => ins.length === 3)!;
   assert.equal(
-    formatInstruction(multi, MAX_I),
-    `${rowBytes(multi).map((b) => b.hex).join(' ').padEnd(11)}  ${rowTail(multi, MAX_I)}`,
+    formatInstruction(multi),
+    `${rowBytes(multi).map((b) => b.hex).join(' ').padEnd(11)}  ${rowTail(multi)}`,
   );
+});
+
+// ------------------------------------------------------------- the anchor
+/**
+ * The listing is one sweep of the genome from an address the reader chooses, so
+ * the anchor is the whole of its relationship to what the machine is running. Two
+ * things have to hold for that to be usable: an anchor from a click lands inside
+ * the genome whatever number arrives, and only an operand that NAMES a place in the
+ * genome is followable.
+ */
+test('an anchor lands inside the genome, whatever number arrives', () => {
+  assert.equal(normaliseAnchor(0, 64), 0);
+  assert.equal(normaliseAnchor(37, 64), 37);
+  assert.equal(normaliseAnchor(64, 64), 0, 'one past the end is the start, which is what the VM does');
+  assert.equal(normaliseAnchor(70, 64), 6);
+  assert.equal(normaliseAnchor(-2, 64), 62, 'a negative anchor is still a slot');
+  assert.equal(normaliseAnchor(5, 0), 0, 'no genome, nothing to anchor to');
+});
+
+test('only an operand that names a place in the genome is followable', () => {
+  // A 16-byte genome, so the address reduction in a fixture is one a reader can do.
+  const target = (bytes: number[]): number | null => {
+    const rom = new Uint8Array(16);
+    rom.set(bytes);
+    return operandTarget(decodeLinear(rom)[0].operand);
+  };
+
+  // The eight two-byte opcodes all address the genome; a SUBROUTINE is the one a
+  // reader follows into a body, and it is the reason this exists. Low byte first:
+  // 0x34 0x02 packs to 564, which a 16-byte genome reduces to 4.
+  assert.equal(target([Instruction.SUBROUTINE, 0x34, 0x02]), 4);
+  assert.equal(target([Instruction.JMP, 0x03, 0x00]), 3);
+
+  // A channel number and a bare value are numbers, not addresses. Making them
+  // clickable would send the listing somewhere the row never mentions -- and 200 on
+  // an arithmetic opcode would jump to address 200 of a genome that may not have one.
+  assert.equal(target([Instruction.IN, 200]), null, 'input 9 is a channel, not an address');
+  assert.equal(target([Instruction.OUT, 200]), null);
+  assert.equal(target([Instruction.ADD, 200]), null, 'a value of 200 is not address 200');
+  assert.equal(target([Instruction.NOOP]), null, 'no operand, nothing to follow');
+});
+
+test('the row a reader clicks and the row a test reads are the same row', () => {
+  // The page builds a row out of spans so an address operand can be a link, rather
+  // than using rowTail's string. These are the pieces it puts in those spans, and
+  // they have to land in the same columns: an operand trimmed out of its padding
+  // would shift every target one character off the mnemonic column.
+  const rom = genomeOf(7, 24);
+  for (const ins of decodeLinear(rom)) {
+    const operand = operandText(ins.operand);
+    if (operandTarget(ins.operand) !== null) {
+      assert.equal(`  ${operand.trim()}`, operand, 'a link keeps the spaces its text node would have');
+    }
+    assert.equal(
+      `${ins.name.padEnd(11)}${operand}${ins.wrapped ? '  [operands wrap]' : ''}`,
+      rowTail(ins),
+      'the pieces the page assembles are the pieces the text form uses',
+    );
+  }
 });
